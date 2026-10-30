@@ -1,0 +1,38 @@
+:root {
+  --background: #ffffff;
+  --foreground: #1f2229;
+  --card: #ffffff;
+  --card-foreground: #1f2229;
+  --popover: #ffffff;
+  --popover-foreground: #1f2229;
+  --primary: #2463eb;
+  --primary-foreground: #f9fafb;
+  --secondary: #f3f4f6;
+  --secondary-foreground: #1f2229;
+  --muted: #f3f4f6;
+  --muted-foreground: #8f949e;
+  --accent: #f3f4f6;
+  --accent-foreground: #1f2229;
+  --info: #2463eb;
+  --info-foreground: #f5f7ff;
+  --destructive: #ef524d;
+  --destructive-foreground: #ffffff;
+  --success: #31a545;
+  --success-foreground: #f2fdf1;
+  --warning: #ed6e0c;
+  --warning-foreground: #fff6eb;
+  --border: #dfe2e7;
+  --input: #dfe2e7;
+  --ring: #2463eb;
+  --sidebar: #f3f4f6;
+  --sidebar-foreground: #1f2229;
+  --sidebar-primary: #2463eb;
+  --sidebar-primary-foreground: #f9fafb;
+  --sidebar-accent: #e0eaff;
+  --sidebar-accent-foreground: #2463eb;
+  --sidebar-border: #dfe2e7;
+  --sidebar-ring: #2463eb;
+  --radius: 0.5rem;
+  --font-sans: 'Bricolage Grotesque', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Microsoft YaHei', 'Helvetica Neue', Arial, sans-serif;
+}

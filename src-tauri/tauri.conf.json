@@ -1,0 +1,36 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "BatteryView",
+  "version": "1.0.0",
+  "identifier": "com.al75studio.batteryview",
+  "build": {
+    "beforeDevCommand": "npx vite --config vite.config.ts",
+    "devUrl": "http://localhost:8080",
+    "beforeBuildCommand": "node src-tauri/scripts/build-desktop.mjs",
+    "frontendDist": "http://app.localhost"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "外设电量坞 · 2.4G Battery View",
+        "width": 1180,
+        "height": 880,
+        "minWidth": 900,
+        "minHeight": 640,
+        "decorations": false,
+        "center": true,
+        "visible": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; connect-src 'self' ws://localhost:8080 http://localhost:8080; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "icon": ["icons/icon.png", "icons/icon.ico"],
+    "resources": ["../dist/client/**/*"]
+  }
+}

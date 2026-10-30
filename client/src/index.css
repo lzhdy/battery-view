@@ -1,0 +1,55 @@
+@import "./display-font.css";
+@import "./tailwind-theme.css";
+@import "tw-animate-css";
+
+@config "../../tailwind.config.ts";
+
+@keyframes ring-sweep {
+  from {
+    transform: rotate(-90deg);
+  }
+  to {
+    transform: rotate(270deg);
+  }
+}
+
+.ring-sweep {
+  transform-box: view-box;
+  transform-origin: center;
+  animation: ring-sweep 2.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ring-sweep {
+    animation: none;
+  }
+}
+
+.glass-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(42, 34, 51, 0.18) transparent;
+}
+
+.glass-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.glass-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.glass-scroll::-webkit-scrollbar-thumb {
+  background: rgba(42, 34, 51, 0.16);
+  border-radius: 999px;
+}
+
+.glass-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(42, 34, 51, 0.3);
+}
+
+.glass-scroll::-webkit-scrollbar-button {
+  display: none;
+  width: 0;
+  height: 0;
+}

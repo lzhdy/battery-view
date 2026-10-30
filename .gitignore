@@ -1,0 +1,77 @@
+# Dependencies
+node_modules/
+*/node_modules/
+
+# Production builds
+dist/
+*/dist/
+build/
+*/build/
+
+# Rust / Tauri build output (huge, never commit)
+target/
+*/target/
+src-tauri/target/
+
+# Environment files (never commit secrets)
+.env
+.env.*
+!.env.example
+
+# Logs
+*.log
+logs/
+/logs/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Temporary / agent files
+tmp/
+temp/
+.playwright-cli/
+.agent/
+.spark/
+.spark_project
+.npm_cache
+.wv2-profile-test/
+wv2-profile-test/
+
+# Cache
+.eslintcache
+*.tsbuildinfo
+.vite/
+
+# Scaffold / platform leftovers
+skip-vite.json
+
+# Debug artifacts (root-level, from development)
+*.bin
+/exe_garb.bin
+/fetched-index.js
+/served_js*.js
+/capture*.png
+/resize-*.png
+/ref_zoom*.png
+/release-*.png
+/tray-*.png
+/tray_*_preview.png
+/mouse_icon_*.png
+/tray_run-check.png
+
+# Lock files: package-lock.json is kept, others ignored
+yarn.lock
+pnpm-lock.yaml

@@ -1,0 +1,22 @@
+[package]
+name = "battery-view"
+version = "1.0.0"
+description = "外设电量坞 · 2.4G Battery View"
+edition = "2021"
+
+[lib]
+name = "battery_view_lib"
+crate-type = ["staticlib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", default-features = false, features = ["wry", "common-controls-v6", "dynamic-acl", "custom-protocol", "tray-icon"] }
+serde_json = "1.0.154"
+# 托盘图标矢量渲染（本地离线缓存 tiny-skia 0.12；禁用 png-format，直接输出 RGBA）
+tiny-skia = { version = "0.12", default-features = false, features = ["std"] }
+# 单实例互斥（防多实例窗口叠加闪烁）；0.61 已在 Cargo.lock 缓存
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_System_Registry", "Win32_System_Threading", "Win32_Graphics_Dwm"] }
+# 托盘图标超采样缩放（8x 抗锯齿画布 -> 目标尺寸，双线性/CatmullRom）
+image = { version = "0.25", default-features = false, features = ["png"] }
