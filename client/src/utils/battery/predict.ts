@@ -200,7 +200,7 @@ export const estimateTrend = (readings: BatteryReading[], nowCharging: boolean):
       dirMatch &&
       pts.length >= MIN_PRELIMINARY_POINTS &&
       spanMin >= MIN_PRELIMINARY_SPAN_MIN;
-    if (preliminaryOk) {
+    if (preliminaryOk && slope !== null) {
       const prelimTtf: number | null = nowCharging ? (100 - last.level) / slope * 60 : null;
       const prelimTte: number | null = !nowCharging ? last.level / -slope * 60 : null;
       return {

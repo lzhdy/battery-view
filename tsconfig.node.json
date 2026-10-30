@@ -1,18 +1,17 @@
 {
-  "extends": "@lark-apaas/fullstack-presets/lib/simple/tsconfig/tsconfig.node.json",
   "compilerOptions": {
-    "baseUrl": "./",
-    "outDir": "./dist",
-    "preserveWatchOutput": true,
-    "paths": {
-      "@server/*": ["server/*"],
-      "@shared/*": ["shared/*"],
-    }
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "strict": true,
+    "incremental": true,
+    "types": ["node"]
   },
-  "watchOptions": {
-    "excludeDirectories": ["node_modules/**"]
-  },
-  "include": ["server/**/*", "shared/**/*.ts"],
-  // MCP UI 是独立浏览器工程，不使用服务端的 TypeScript 配置。
-  "exclude": ["server/mcp/ui", "node_modules", "dist", "client", "source_package", "**/*.spec.ts", "**/*.e2e-spec.ts"],
+  "include": ["vite.config.ts", "src-tauri/scripts/**/*.mjs"],
+  "exclude": ["node_modules", "dist", "client"]
 }

@@ -3,9 +3,10 @@
  * 触发逻辑在 usePopupNotifier；UI 在 PopupPage。
  */
 import { getDesktopBridge } from './desktop';
+import type { DeviceKind } from './types';
 
 export interface PopupDeviceRow {
-  kind: 'mouse' | 'keyboard' | 'headset' | 'gamepad';
+  kind: DeviceKind;
   name: string;
   level: number; // 0-100，-1=未知
   charging: boolean;

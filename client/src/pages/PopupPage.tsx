@@ -2,6 +2,7 @@ import React from 'react';
 import { X } from 'lucide-react';
 
 import type { PopupPayload } from '@client/src/utils/battery/popup';
+import type { DeviceKind } from '@client/src/utils/battery/types';
 import { closePopup } from '@client/src/utils/battery/popup';
 import { DEVICE_IMAGES } from '@client/src/utils/battery/demo';
 import { loadCustomBackground } from '@client/src/utils/battery/desktop';
@@ -24,7 +25,7 @@ const ROW_H = 45;
  *  行高固定 45px、外层上下内边距 10px，上下空白完全对称，无 flex 均分空隙。
  */
 const Row: React.FC<{
-  kind: 'mouse' | 'keyboard' | 'headset' | 'gamepad';
+  kind: DeviceKind;
   name: string;
   level: number;
   charging: boolean;

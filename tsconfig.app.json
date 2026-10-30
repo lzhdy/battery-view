@@ -1,24 +1,27 @@
 {
-  "extends": "@lark-apaas/fullstack-presets/lib/simple/tsconfig/tsconfig.app.json",
   "compilerOptions": {
+    "target": "ES2022",
+    "useDefineForClassFields": true,
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "skipLibCheck": true,
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "strict": true,
+    "noUnusedLocals": false,
+    "noUnusedParameters": false,
+    "noFallthroughCasesInSwitch": true,
     "baseUrl": "./",
     "paths": {
-      "@client/*": ["client/*"],
-      "@shared/*": ["shared/*"],
       "@/*": ["./client/src/*"],
-      "@lark-apaas/client-toolkit/tools/*": ["node_modules/@lark-apaas/client-toolkit/lib/apis/tools/*"]
+      "@client/*": ["./client/*"]
     },
-    "incremental": true,
+    "types": ["vite/client"],
+    "incremental": true
   },
-  "include": [
-    "client/**/*",
-    "shared/**/*"
-  ],
-  "exclude": [
-    "node_modules",
-    "dist",
-    "public",
-    "source_package",
-    "client/src/api/gen"
-  ]
+  "include": ["client/src/**/*.ts", "client/src/**/*.tsx"]
 }

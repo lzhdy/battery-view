@@ -1,14 +1,21 @@
 import path from 'path';
-import { defineConfig } from '@lark-apaas/coding-preset-vite-react';
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
 export default defineConfig({
+  plugins: [react(), tailwindcss()],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'client/src'),
+      '@client': path.resolve(__dirname, 'client'),
     },
   },
   build: {
+    outDir: 'dist/client',
+    chunkSizeWarningLimit: 1500,
     rollupOptions: {
+      input: 'client/index.html',
       output: {
         manualChunks: (id: string) => {
           if (!id.includes('node_modules')) return undefined;
@@ -21,7 +28,6 @@ export default defineConfig({
           }
           return 'v_misc';
         },
-        chunkSizeWarningLimit: 1500,
       },
     },
   },
