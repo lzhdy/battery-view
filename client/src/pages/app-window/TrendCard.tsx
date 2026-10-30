@@ -142,6 +142,8 @@ const TrendCard: React.FC<TrendCardProps> = ({ readings, charging }) => {
         type: 'line',
         name: '电量',
         data: points,
+        // ECharts 6 起 line 默认 symbol 为空心圆（白底描边），显式指定实心 circle 保持旧视觉
+        symbol: 'circle',
         symbolSize: 6,
         lineStyle: { width: 2.5, color: lineColor },
         itemStyle: { color: lineColor },

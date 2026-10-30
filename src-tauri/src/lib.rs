@@ -541,7 +541,20 @@ pub fn run() {
             }
             let base = dist_base();
             let file = base.join(path);
-            let data = std::fs::read(&file);
+            // DLP 透明加密：非白名单进程（本程序）读取 .js 会拿到密文（+4096 字节头），
+            // WebView2 解析密文即 SyntaxError → 界面空白。构建时已为 assets/*.js 生成
+            // 同名 *.jsd 明文副本（DLP 不加密 .jsd 扩展名），此处 .js 请求优先读 .jsd。
+            let data = if path.ends_with(".js") {
+                let jsd = file.with_extension("jsd");
+                let d = std::fs::read(&jsd);
+                if d.is_ok() {
+                    d
+                } else {
+                    std::fs::read(&file)
+                }
+            } else {
+                std::fs::read(&file)
+            };
             match data {
                 Ok(data) => tauri::http::Response::builder()
                     .header("Content-Type", asset_mime(path))

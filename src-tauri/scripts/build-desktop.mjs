@@ -26,6 +26,26 @@ const stripMaps = (dir) => {
 };
 if (fs.existsSync(distDir)) stripMaps(distDir);
 
+// DLP 明文副本（可选）：公司 DLP 对 .js 扩展名做透明加密，非白名单进程（battery-view.exe）
+// 读取时得到密文（+4096B 头），WebView2 解析即 SyntaxError 导致界面空白。仅在显式开启
+// DLP_JSD_MIRROR=1 时，为 assets/*.js 生成同名 *.jsd 明文副本（DLP 不加密 .jsd）；
+// lib.rs 协议层对 .js 请求优先读同名 .jsd，不存在则回退 .js（无 DLP 环境行为不变）。
+if (process.env.DLP_JSD_MIRROR === "1") {
+  const jsdAssets = path.join(distDir, 'assets');
+  if (fs.existsSync(jsdAssets)) {
+    let n = 0;
+    for (const entry of fs.readdirSync(jsdAssets, { withFileTypes: true })) {
+      if (entry.isFile() && entry.name.endsWith('.js')) {
+        const src = path.join(jsdAssets, entry.name);
+        const dst = src.slice(0, -3) + '.jsd';
+        fs.copyFileSync(src, dst);
+        n++;
+      }
+    }
+    if (n > 0) console.log(`jsd mirror created (DLP_JSD_MIRROR=1): ${n} files`);
+  }
+}
+
 // flatten: preset outputs <distDir>/client/index.html while assets sit at <distDir>/assets;
 // move index.html up so frontendDist resolves both correctly.
 const nested = path.join(distDir, 'client');
