@@ -12,34 +12,39 @@
 
 - **托盘实时电量**：每台设备一个托盘图标（Lucide 开源线条剪影 + 右侧电量竖条），电量颜色随阈值变化（充电蓝 / ≥50 绿 / ≥20 橙 / <20 红），自动适配深浅色任务栏与 DPI 缩放
 - **毛玻璃主窗口**：1180×880 无边框窗口，渐变极光背景 + 毛玻璃卡片，圆环仪表盘展示当前电量
-- **电量趋势预测**：本地持久化每台设备最近 500 条历史采样，基于历史数据做初步估算与稳定预测，显示"预计还能用 X"（初步估算与刷新频率联动，采样越多越准）
-- **智能弹窗提醒**：充电跳变、低电量（<20%）、电量不足（20%~50%）、充满完成等场景自动弹窗（可开关）
+- **电量趋势预测**：本地持久化每台设备最近 4000 条历史采样（≈16.7h@5min/条），先给方向性"初步估算"，数据足够后升级为稳定预测。对 2.4G 离散档位电量（5%/10%/20%…）自动识别粒度并按"每档耗时"换算预计可用时长；关机空窗跳变自动剔除，不会把关机当掉电；档位档案按设备 VID:PID（硬件型号）持久化，跨次启动直接复用历史先验，一天多次开关机也能立刻给出预测
+- **智能弹窗提醒**：四类场景自动弹窗（可分别开关）——开机首次电量汇报、充电插入跳变（Rust 托盘 5s 轮询优先检测 + 30s 去重）、电量 <20% 低电提醒（每 24h）、电量 <10% 过低提醒（每 30min）；低电/过低弹窗不自动消失，需手动关闭
 - **多设备管理**：同时监控多台外设，设备重命名、连接方式（有线/无线）自动识别
 - **开机自启**：默认开启，注册表 HKCU Run 一键管理（可关闭）
 - **数据本地保存**：所有设置与历史采样仅存于本地（WebView localStorage），不联网、不上传
-- **插件化架构**：通用外设电量平台 + 协议插件——雷蛇 90B / 标准 HID / BLE GATT 均为接入平台的插件；设备知识（VID/PID/名称/类型/连接/协议）收敛到一张设备注册表，新增设备不改平台代码
+- **插件化架构**：通用外设电量平台 + 协议插件——雷蛇 90B / 标准 HID / JM 私有协议 / BLE GATT 均为接入平台的插件；设备知识（VID/PID/名称/类型/连接/协议）收敛到一张设备注册表，新增设备不改平台代码
 
 ## Supported Devices
 
-设备识别采用**通用平台 + 协议插件**架构：平台（DeviceManager）只面向统一 Provider 接口，负责枚举全部 HID 接口并按设备注册表过滤；雷蛇 90B、标准 HID 电池页、BLE GATT 各自实现为一个 Provider 插件，只负责读取。
+设备识别采用**通用平台 + 协议插件**架构：平台（DeviceManager）只面向统一 Provider 接口，负责枚举全部 HID 接口并按设备注册表过滤；雷蛇 90B、标准 HID 电池页、JM 私有协议、BLE GATT 各自实现为一个 Provider 插件，只负责读取。注册表当前登记 4 条设备（见下），均为本机实测可用。
 
-### Razer（90B Feature Report，实测可用）
+### Razer（90B Feature Report）
 
-| 设备 | PID | 协议 | 状态 |
+| 设备 | VID:PID | 协议 | 状态 |
 | --- | --- | --- | --- |
-| Razer DeathAdder V2 Pro（有线 / 2.4G） | `0x007C` / `0x007D` | Razer 90B 电池 feature | ✅ 实测可用 |
-| 其他 Razer 2.4G 外设（键盘/耳机/鼠标垫） | 同族 | Razer 90B 电池 feature | ⚠️ 理论支持（需真机验证） |
+| Razer DeathAdder V2 Pro（有线 / 2.4G） | `1532:007C` / `1532:007D` | Razer 90B 电池 feature | ✅ 实测可用 |
+| 其他 Razer 2.4G 外设（键盘/耳机/鼠标垫） | 同族 | Razer 90B 电池 feature | ⚠️ 理论支持（需真机验证，注册表按需补条目） |
 
-### 通用外设（设备注册表 `src-tauri/src/registry.rs` 驱动）
+### 达尔优 AE7（JM 私有协议）
 
-| 设备 | VID:PID | 类型 | 连接 | 电量 |
-| --- | --- | --- | --- | --- |
-| 达尔优 AE7 | `260D:1257` | 鼠标 | 2.4G | ⚠️ 无标准 HID 电池页 → `--` |
-| 北通 黑武士 4 Pro（XInput） | `045E:028E` | 手柄 | XInput | ⚠️ 无公开协议 → `--` |
-| 北通 黑武士 4 Pro（直连/2.4G） | `2E8C:*` | 手柄 | 无线 | ⚠️ 预留分支（需真机验证） |
-| 京东京造键盘（Keychron K8） | `05AC:024F` | 键盘 | 蓝牙 | ⚠️ 未暴露标准 BLE Battery Service（0x180F）→ `--`（协议必然） |
+| 设备 | VID:PID | 类型 | 连接 | 协议 | 状态 |
+| --- | --- | --- | --- | --- | --- |
+| 达尔优 AE7（有线形态） | `260D:1250` | 鼠标 | 有线 | JM 0xFF02/0x08 | ✅ 实测可读（5% 梯度） |
+| 达尔优 AE7（2.4G 8K 接收器） | `260D:1257` | 鼠标 | 2.4G | JM 0xFF02/0x08 | ✅ 实测可读（5% 梯度） |
 
-> 已探测确认：达尔优 AE7（2.4G 私有协议）、北通黑武士 4 Pro（XInput 形态无电量字段）在 Windows 下无公开电量读取协议，电量显示 `--` 属预期行为。**京东京造键盘实机核验为 Keychron K8（`05AC:024F`，传统蓝牙 + HID-over-GATT），Windows 设备树中无 Battery Service（0x180F）节点，无标准电量可读 → `--`（协议必然）；此前 `37D7:1002` 经实机核验为 FlyDigi BS2PRO 散热器（非键盘，已从注册表移除，不入列表），程序早期显示"键盘 94%"实为误读了该散热器的 GATT 电池值。**后续若其他厂商提供协议，在 `registry.rs` 登记新设备 +（必要时）新增/扩展一个 Provider 插件即可。
+### 预留 Provider（未登记设备，随注册表条目启用）
+
+| Provider | 适用设备 | 说明 |
+| --- | --- | --- |
+| 标准 HID 电池页（`generic.rs`） | 暴露 Usage Page `0x0084` 的设备 | 协议已实现，注册表暂无对应条目 |
+| BLE GATT（`ble.rs`） | 暴露 Battery Service `0x180F` 的蓝牙设备 | 协议已实现（百分比模式），注册表暂无对应条目 |
+
+> 已探测确认：达尔优 AE7（2.4G 私有协议）虽无标准 HID 电池页，但经 JM 私有协议实测可读电量（按 5% 梯度报告），已由 `jm.rs` Provider 接入；北通黑武士 4 Pro（XInput 形态无电量字段）、京东京造键盘（Keychron K8，`05AC:024F` 传统蓝牙无 Battery Service `0x180F`）按协议必然读不到电量，不入注册表也不入本列表；此前 `37D7:1002` 经实机核验为 FlyDigi BS2PRO 散热器（非键盘），已从注册表移除。后续若其他厂商提供协议，在 `registry.rs` 登记新设备 +（必要时）新增/扩展一个 Provider 插件即可。
 
 ## Architecture（为什么加新设备很容易）
 
@@ -57,18 +62,18 @@
 │  Rust 平台核心 (src-tauri/src)                         │
 │  DeviceManager (manager.rs)：统一枚举 + 去重 + 路由      │
 │  DeviceRegistry (registry.rs)：设备知识单一事实源        │
-│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐  │
-│  │ Razer Provider│ │ HID Provider │ │ BLE Provider │  │
-│  │ (hid.rs 90B) │ │ (generic.rs) │ │ (ble.rs GATT)│  │
-│  └──────────────┘ └──────────────┘ └──────────────┘  │
+│  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐  │
+│  │ Razer Provider│ │ HID Provider │ │  JM Provider │ │ BLE Provider │  │
+│  │ (hid.rs 90B) │ │ (generic.rs) │ │ (jm.rs 私有) │ │ (ble.rs GATT)│  │
+│  └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘  │
 │  tray.rs 托盘渲染 · lib.rs 命令/单实例/设置/弹窗调度      │
 └──────────────────────────────────────────────────────┘
 ```
 
 ### 添加一台新设备（三步）
 
-1. **登记设备**（`src-tauri/src/registry.rs`）：在设备注册表加一行 `DeviceEntry { vid, pid, kind, name, connection, protocol, provider_id }`，如 `(0x260D, Some(0x1257), "mouse", "达尔优 AE7", "2.4G", "无公开协议", "hid")`；设备即自动出现在主窗口 / 托盘 / 菜单（平台统一枚举 + 注册表过滤）。
-2. **电量协议**：设备暴露标准 HID 电池页（Usage Page `0x0084`）→ 完善 HID Provider 的 0x84 读取；设备有 BLE 电池服务（0x180F）→ 复用 BLE Provider；私有协议 → 仿照 `hid.rs` 新增一个 Provider 实现 `DeviceProvider` trait（只读两个方法）。无协议时保持返回 `Ok((None, false))`，前端显示 `--`，不阻塞设备识别。
+1. **登记设备**（`src-tauri/src/registry.rs`）：在设备注册表加一行 `DeviceEntry { vid, pid, kind, name, connection, protocol, provider_id }`，如 `(0x260D, Some(0x1257), "mouse", "达尔优 AE7", "2.4G", "JM 私有协议", "jm")`；设备即自动出现在主窗口 / 托盘 / 菜单（平台统一枚举 + 注册表过滤）。
+2. **电量协议**：设备暴露标准 HID 电池页（Usage Page `0x0084`）→ 完善 HID Provider 的 0x84 读取；设备有 BLE 电池服务（0x180F）→ 复用 BLE Provider；私有协议 → 仿照 `hid.rs` / `jm.rs` 新增一个 Provider 实现 `DeviceProvider` trait（只读两个方法），并在 `manager.rs` 注册表行里指向它。无协议时保持返回 `Ok((None, false))`，前端显示 `--`，不阻塞设备识别。
 3. **托盘图标**：若新设备需要托盘专属图标，把设备线条图标 PNG（Lucide 风格，128×128）放入 `src-tauri/src/assets/lucide/`，`tray.rs` 按 `kind` 自动找到并渲染（`mouse` / `keyboard` / `gamepad` 等剪影已内置）。
 
 前端所有 UI、趋势预测、弹窗逻辑与设备无关——它们只消费 `BatteryProvider` 返回的 `BatteryDevice[]` / `BatteryReadResult`。
@@ -117,14 +122,16 @@ npx @tauri-apps/cli@latest build
 battery-view/
 ├── client/               # 前端（React + Vite + Tailwind v4）
 │   ├── src/pages/        # AppWindow（主窗口）/ PopupPage（弹窗）
-│   ├── src/utils/battery/# BatteryProvider / 趋势预测 / 历史存储
+│   ├── src/hooks/        # useBatteryApp（轮询/热插拔/历史落盘）、usePopupNotifier（4 场景弹窗）
+│   ├── src/utils/battery/# BatteryProvider / 趋势预测(predict.ts) / 历史存储(store.ts)
 │   └── src/components/ui/ # 毛玻璃 UI 组件（Radix + Tailwind）
 ├── src-tauri/            # Tauri 壳（Rust）
 │   ├── src/manager.rs    # DeviceManager：统一枚举/去重/路由（平台核心）
 │   ├── src/registry.rs   # 设备注册表：VID/PID→名称/类型/连接/协议（单一事实源）
-│   ├── src/provider.rs   # DeviceProvider trait + ProviderDevice
+│   ├── src/provider.rs   # DeviceProvider trait + ProviderDevice（插件接口）
 │   ├── src/hid.rs        # Razer 90B Provider（Feature Report 读取）
 │   ├── src/generic.rs    # 标准 HID Provider（统一枚举器 + 0x84 检测）
+│   ├── src/jm.rs         # 达尔优 JM 私有协议 Provider（全局读锁 + 重试）
 │   ├── src/ble.rs        # BLE GATT Provider（0x180F / 0x2A19）
 │   ├── src/tray.rs       # 托盘图标渲染（Lucide PNG + 电量条）
 │   ├── src/lib.rs        # 命令注册 / 单实例 / 设置 / 弹窗调度

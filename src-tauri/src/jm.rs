@@ -73,7 +73,6 @@ const OPEN_EXISTING: u32 = 3;
 const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 const ERROR_IO_PENDING: u32 = 997;
 const WAIT_OBJECT_0: u32 = 0;
-const WAIT_TIMEOUT: u32 = 0x0000_0102;
 
 /// 命令集合标识（与网页驱动 ParseDevices 判定一致）
 pub const JM_USAGE_PAGE: u16 = 0xFF02;
