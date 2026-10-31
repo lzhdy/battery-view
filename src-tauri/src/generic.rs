@@ -2,8 +2,9 @@
 //!
 //! 枚举白名单品牌的 HID 设备接口（达尔优 AE7 鼠标 / 北通黑武士 4 Pro 手柄 / 京东京造键盘），
 //! 按 VID:PID 分流 kind/名称/连接方式；电量读取策略：
-//! - 蓝牙键盘（京东京造，BLE HID over GATT）→ 走 ble.rs 的 Windows GATT 电池服务（0x180F/0x2A19）
-//! - 其余（达尔优 2.4G 私有协议 / XInput 手柄 / 有线键盘）→ 无公开电量读取协议，返回"暂不支持"
+//! - 蓝牙键盘（京东京造，BLE HID over GATT）→ 由 BLE Provider 单独路由（ble.rs，0x180F/0x2A19）
+//! - 标准 HID 电池页（0x84）设备 → 本文件按 HID 规范读取 Battery Strength（0x40）+ Charging（0x44）
+//! - 其余（达尔优 2.4G 私有协议 / XInput 手柄）→ 无公开电量读取协议，返回 "--"
 //! FFI 直调系统 DLL，零第三方 crate（与 hid.rs 同一风格；BLE 读取走 windows crate WinRT 投影）。
 
 use std::ffi::OsStr;
@@ -41,12 +42,24 @@ extern "system" {
     fn HidD_GetAttributes(device: *mut std::ffi::c_void, attributes: *mut HIDD_ATTRIBUTES) -> i32;
     fn HidD_GetPreparsedData(device: *mut std::ffi::c_void, preparsed_data: *mut *mut std::ffi::c_void) -> i32;
     fn HidD_FreePreparsedData(preparsed_data: *mut std::ffi::c_void) -> i32;
+    fn HidD_GetInputReport(device: *mut std::ffi::c_void, report_buffer: *mut u8, report_buffer_len: u32) -> i32;
+    fn HidD_GetFeature(device: *mut std::ffi::c_void, report_buffer: *mut u8, report_buffer_len: u32) -> i32;
     fn HidP_GetCaps(preparsed_data: *mut std::ffi::c_void, caps: *mut HIDP_CAPS) -> i32;
     fn HidP_GetValueCaps(
         report_type: u32,
         value_caps: *mut HIDP_VALUE_CAPS,
         value_caps_length: *mut u16,
         preparsed_data: *mut std::ffi::c_void,
+    ) -> i32;
+    fn HidP_GetUsageValue(
+        report_type: u32,
+        usage_page: u16,
+        link_collection: u16,
+        usage: u16,
+        usage_value: *mut u32,
+        preparsed_data: *mut std::ffi::c_void,
+        report: *const u8,
+        report_length: u16,
     ) -> i32;
 }
 
@@ -70,6 +83,11 @@ const INVALID_HANDLE_VALUE: isize = -1;
 const FILE_SHARE_READ: u32 = 0x0000_0001;
 const FILE_SHARE_WRITE: u32 = 0x0000_0002;
 const OPEN_EXISTING: u32 = 3;
+const HIDP_INPUT: u32 = 0x11;
+const HIDP_FEATURE: u32 = 0x13;
+const USAGE_PAGE_BATTERY: u16 = 0x84; // Power Device page：标准 HID 电池
+const USAGE_BATTERY_STRENGTH: u16 = 0x40; // Battery Strength（0-100/0-255）
+const USAGE_BATTERY_CHARGING: u16 = 0x44; // Battery Charging（boolean）
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -275,18 +293,15 @@ pub fn enumerate_all_hid() -> Vec<(String, u16, u16, u16)> {
     out
 }
 
-/// 该 HID 接口是否暴露标准 HID 电池强度页（Power Device page 0x84）
-fn has_battery_page(handle: isize) -> bool {
-    let mut prep: *mut std::ffi::c_void = std::ptr::null_mut();
-    if unsafe { HidD_GetPreparsedData(handle as *mut std::ffi::c_void, &mut prep) } == 0 || prep.is_null() {
-        return false;
-    }
+/// 该 HID 接口是否暴露标准 HID 电池强度页（Power Device page 0x84）。
+/// 使用已获取的 preparsed data 检测（避免重复 GetPreparsedData）。
+fn has_battery_page_from_prep(prep: *mut std::ffi::c_void) -> bool {
     let mut caps: HIDP_CAPS = HIDP_CAPS::default();
     unsafe { HidP_GetCaps(prep, &mut caps) };
     let mut hit = false;
     for (kind, count) in [
-        (0x11u32, caps.number_input_value_caps), // HidP_Input
-        (0x13u32, caps.number_feature_value_caps), // HidP_Feature
+        (HIDP_INPUT, caps.number_input_value_caps),
+        (HIDP_FEATURE, caps.number_feature_value_caps),
     ] {
         if count == 0 {
             continue;
@@ -302,17 +317,58 @@ fn has_battery_page(handle: isize) -> bool {
         }; count as usize];
         let ret = unsafe { HidP_GetValueCaps(kind, buf.as_mut_ptr(), &mut cnt, prep) };
         if ret == 0x00110000 || ret == 0 {
-            if buf.iter().any(|c| c.usage_page == 0x84) {
+            if buf.iter().any(|c| c.usage_page == USAGE_PAGE_BATTERY) {
                 hit = true;
             }
         }
     }
-    unsafe { HidD_FreePreparsedData(prep) };
     hit
 }
 
+/// 从一份报告 buffer 中解析标准电池用法：电量（0x84:0x40）+ 充电状态（0x84:0x44）。
+/// 返回 (电量百分比, 是否充电中)；任一步失败 → (None, false) 防误报。
+fn parse_battery_usages(
+    report_type: u32,
+    prep: *mut std::ffi::c_void,
+    buf: &[u8],
+) -> (Option<u8>, bool) {
+    let mut level: u32 = 0;
+    let mut charging: u32 = 0;
+    let r1 = unsafe {
+        HidP_GetUsageValue(
+            report_type,
+            USAGE_PAGE_BATTERY,
+            0,
+            USAGE_BATTERY_STRENGTH,
+            &mut level,
+            prep,
+            buf.as_ptr(),
+            buf.len() as u16,
+        )
+    };
+    if r1 != 0 {
+        return (None, false);
+    }
+    let r2 = unsafe {
+        HidP_GetUsageValue(
+            report_type,
+            USAGE_PAGE_BATTERY,
+            0,
+            USAGE_BATTERY_CHARGING,
+            &mut charging,
+            prep,
+            buf.as_ptr(),
+            buf.len() as u16,
+        )
+    };
+    // Battery Strength 逻辑范围通常 0-100；个别设备按 0-255 报告，按比例缩放兜底
+    let v = if level <= 100 { level as u8 } else { ((level as u32 * 100) / 255) as u8 };
+    (Some(v), r2 == 0 && charging != 0)
+}
+
 /// 读取标准 HID 设备电量（HID Provider 只接收注册表 provider_id=hid 的设备）：
-/// - 标准 HID 电池（0x84 页）设备：检测到该页时返回 None（读取实现待有此类设备后补全）
+/// - 标准 HID 电池页（0x84）设备：优先 Input Report，失败再试 Feature Report，
+///   读 Battery Strength（0x40）为电量、Battery Charging（0x44）为充电状态（阶段 C 补全）
 /// - 其余（达尔优 2.4G / XInput 手柄）：无公开读取协议 →
 ///   返回 Ok((None, false))，前端显示 "--"（不报错、不影响设备识别）
 /// - BLE 键盘由 BLE Provider 单独路由（ble.rs），不在此处处理（P4 已收敛）
@@ -332,12 +388,39 @@ pub fn read_battery(path: &str) -> Result<(Option<u8>, bool), String> {
     if handle == INVALID_HANDLE_VALUE {
         return Err("无法打开设备".to_string());
     }
-    let has = has_battery_page(handle);
-    unsafe { CloseHandle(handle) };
-    if has {
-        // 标准电池强度页存在：读取实现后续扩展（当前本机未出现此类设备）
-        Ok((None, false))
-    } else {
-        Ok((None, false))
+    let mut prep: *mut std::ffi::c_void = std::ptr::null_mut();
+    if unsafe { HidD_GetPreparsedData(handle as *mut std::ffi::c_void, &mut prep) } == 0 || prep.is_null() {
+        unsafe { CloseHandle(handle) };
+        return Err("无法获取设备解析数据".to_string());
     }
+    // 无 0x84 电池页 → 非标准电池设备，返回 "--"（不报错）
+    if !has_battery_page_from_prep(prep) {
+        unsafe { HidD_FreePreparsedData(prep) };
+        unsafe { CloseHandle(handle) };
+        return Ok((None, false));
+    }
+    let mut caps: HIDP_CAPS = HIDP_CAPS::default();
+    unsafe { HidP_GetCaps(prep, &mut caps) };
+    let mut out: (Option<u8>, bool) = (None, false);
+    // 1) Input Report（多数电池设备经输入报告上报状态）
+    if caps.input_report_byte_length > 0 {
+        let len = caps.input_report_byte_length as usize;
+        let mut buf = vec![0u8; len];
+        let ok = unsafe { HidD_GetInputReport(handle as *mut std::ffi::c_void, buf.as_mut_ptr(), len as u32) } != 0;
+        if ok {
+            out = parse_battery_usages(HIDP_INPUT, prep, &buf);
+        }
+    }
+    // 2) Input 读不到时回退 Feature Report
+    if out.0.is_none() && caps.feature_report_byte_length > 0 {
+        let len = caps.feature_report_byte_length as usize;
+        let mut buf = vec![0u8; len];
+        let ok = unsafe { HidD_GetFeature(handle as *mut std::ffi::c_void, buf.as_mut_ptr(), len as u32) } != 0;
+        if ok {
+            out = parse_battery_usages(HIDP_FEATURE, prep, &buf);
+        }
+    }
+    unsafe { HidD_FreePreparsedData(prep) };
+    unsafe { CloseHandle(handle) };
+    Ok(out)
 }
