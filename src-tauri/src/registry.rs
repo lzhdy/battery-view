@@ -31,8 +31,10 @@ fn table() -> &'static [DeviceEntry] {
             // 雷蛇（90B 私有协议）
             DeviceEntry { vid: 0x1532, pid: Some(0x007C), kind: "mouse", name: "DeathAdder V2 Pro", connection: "有线", protocol: "Razer 90B Feature Report", provider_id: PROVIDER_RAZER },
             DeviceEntry { vid: 0x1532, pid: Some(0x007D), kind: "mouse", name: "DeathAdder V2 Pro", connection: "2.4G", protocol: "Razer 90B Feature Report", provider_id: PROVIDER_RAZER },
-            // 达尔优 AE7（260D:1257 为 8K 接收器；匠盟 JM 私有协议，
-            // 经网页驱动 jmdevice.js 逆向 + 真机实测：0x08 report / cmd 0x04 → 帧体[5]=电量%）
+            // 达尔优 AE7（匠盟 JM 私有协议，经网页驱动 jmdevice.js 逆向 + 真机实测：
+            // 0x08 report / cmd 0x04 → Windows raw[6]=电量%、raw[7]=状态 0x01/0x02 充电）
+            // 有线直连为鼠标本体 260D:1250；2.4G 为 8K 接收器 260D:1257（电量经 dongle 转发）
+            DeviceEntry { vid: 0x260D, pid: Some(0x1250), kind: "mouse", name: "达尔优 AE7", connection: "有线", protocol: "匠盟(JM) 私有协议", provider_id: PROVIDER_JM },
             DeviceEntry { vid: 0x260D, pid: Some(0x1257), kind: "mouse", name: "达尔优 AE7", connection: "2.4G", protocol: "匠盟(JM) 私有协议", provider_id: PROVIDER_JM },
             // 北通 黑武士 4 Pro（直连/2.4G 无线，VID 通配）
             DeviceEntry { vid: 0x2E8C, pid: None, kind: "gamepad", name: "黑武士 4 Pro", connection: "无线", protocol: "无公开协议", provider_id: PROVIDER_HID },
