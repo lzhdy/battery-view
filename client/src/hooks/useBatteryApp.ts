@@ -147,6 +147,10 @@ export const useBatteryApp = (): UseBatteryAppResult => {
     getBatteryProvider()
       .listDevices()
       .then((list: BatteryDevice[]) => {
+        // 枚举瞬态失败可能返回空列表（SetupDiGetClassDevsW 偶发失败）：
+        // 不视为"全部设备拔出"，避免 15s 周期内 UI 误删全部设备导致闪烁/掉线假象；
+        // 真实拔出时系统仍有其他 HID 接口，列表非空，正常按增量处理。
+        if (list.length === 0) return;
         const prev = devicesRef.current;
         const prevIds = new Set(prev.map((d: BatteryDevice) => d.id));
         const nextIds = new Set(list.map((d: BatteryDevice) => d.id));
@@ -254,12 +258,17 @@ export const useBatteryApp = (): UseBatteryAppResult => {
     return () => window.clearInterval(timer);
   }, []);
 
-  // 启动校准：默认选中跳转到第一个"有电量读数"的设备。
-  // 读不到电量的外设（如达尔优 AE7 2.4G）会停在"等待读取"，不该占据默认主区视图；
+  // 启动校准：默认选中第一个连接中的设备（用户明确要求）。
+  // 启动/未选中（selectedId===null）时直接选中 devices[0]，不等电量读数；
+  // 已选中但当前设备读不到电量、且列表中存在有电量的设备时，跳转到第一台有电量的设备；
   // 用户手动选择设备后不再干预。
   useEffect(() => {
     if (autoSelected) return;
-    if (selectedId === null || devices.length === 0) return;
+    if (devices.length === 0) return;
+    if (selectedId === null) {
+      setSelectedId(devices[0].id);
+      return;
+    }
     const current = devices.find((d: BatteryDevice) => d.id === selectedId);
     if (!current) return;
     const curBattery = states[current.id]?.battery;

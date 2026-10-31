@@ -202,9 +202,17 @@ fn utf16(s: &str) -> Vec<u16> {
 pub fn enumerate_all_hid() -> Vec<(String, u16, u16, u16, u16, u16, u16)> {
     let mut guid: GUID = unsafe { std::mem::zeroed() };
     unsafe { HidD_GetHidGuid(&mut guid) };
-    let dev_info = unsafe {
+    // SetupDiGetClassDevsW 在 USB 总线繁忙时可能偶发失败返回空列表，导致前端误判
+    // "全部设备拔出"；失败重试一次后再放弃。
+    let mut dev_info = unsafe {
         SetupDiGetClassDevsW(&guid, std::ptr::null(), 0, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE)
     };
+    if dev_info == INVALID_HANDLE_VALUE {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        dev_info = unsafe {
+            SetupDiGetClassDevsW(&guid, std::ptr::null(), 0, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE)
+        };
+    }
     if dev_info == INVALID_HANDLE_VALUE {
         return Vec::new();
     }

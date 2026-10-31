@@ -48,11 +48,12 @@ const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const [tab, setTab] = React.useState<SidebarTab>('live');
 
+  // 离线判定：仅"读取报错"归历史设备；battery 为 null（启动未读到/JM 间歇读取失败）
+  // 仍视为连接中（显示"等待读取"），避免设备在 2.4G 读取失败瞬间被误判"掉线"移出连接中列表。
   const isOffline = (id: string): boolean => {
     const state: DeviceLiveState | undefined = states[id];
     if (state === undefined) return false;
-    if (state.error !== '') return true;
-    return state.battery === null;
+    return state.error !== '';
   };
 
   const pastDevices: BatteryDevice[] = devices.filter((device: BatteryDevice) =>
