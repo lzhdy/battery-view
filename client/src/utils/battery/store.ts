@@ -23,7 +23,7 @@ export interface NameOverrides {
 const READINGS_KEY = 'battery-view/readings/v3';
 const SETTINGS_KEY = 'battery-view/settings';
 const NAMES_KEY = 'battery-view/names';
-export const MAX_READINGS_PER_DEVICE = 500;
+export const MAX_READINGS_PER_DEVICE = 4000;
 
 const DEFAULT_SETTINGS: AppSettings = {
   autoRefresh: true,

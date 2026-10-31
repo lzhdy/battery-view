@@ -74,6 +74,68 @@ const regressSlope = (pts: { at: number; level: number }[]): number | null => {
   return (n * sxy - sx * sy) / denom;
 };
 
+/** 档位粒度（%）：如 5、10、20 */
+interface GearMode {
+  granularity: number;
+  /** 每掉/涨一档的平均耗时（分钟） */
+  perGearMinutes: number;
+}
+
+const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
+
+/**
+ * 检测"档位式"电量：读数按离散档位跳变（5%/10%/20%…，不固定粒度），
+ * 而非 1% 连续变化。判断依据：段内不同档位的相邻差值全部是同一公约数的倍数，
+ * 且粒度 ∈ [2, 25]。阶梯数据对线性回归极不友好（档位切换瞬间 15s 掉 5%
+ * → 虚大斜率、TTE 几分钟；档位内 → 判平稳无预测），故此类设备改用每档耗时估算。
+ *
+ * 关键边界：
+ * 1. 必须 ≥2 次有效档位跳变才承认粒度；
+ * 2. 关机跳变剔除——程序关闭一段时间后重启、电量一下跨档，该次跳变前的
+ *    采样间隔远大于正常轮询间隔，属于关机空窗的累积跳变，不计入粒度证据
+ *    （否则真实 5% 设备会被关机 10% 跳变污染，perGear 严重偏短）。
+ */
+const detectGearMode = (segment: BatteryReading[]): GearMode | null => {
+  if (segment.length < 2) return null;
+  const levels: number[] = [...new Set(segment.map((r) => Math.round(r.level)))].sort(
+    (a, b) => a - b,
+  );
+  if (levels.length < 3) return null; // 至少 3 个档位值 = ≥2 次独立跳变
+  const diffs: number[] = [];
+  for (let i = 1; i < levels.length; i += 1) {
+    const d: number = levels[i] - levels[i - 1];
+    if (d >= 1) diffs.push(d);
+  }
+  if (diffs.length === 0) return null;
+  const g: number = diffs.reduce(gcd, diffs[0]);
+  if (g < 2 || g > 25) return null;
+  // 正常采样间隔（段内相邻样本间隔的中位数），用于识别关机空窗跳变
+  const sampleGaps: number[] = [];
+  for (let i = 1; i < segment.length; i += 1) {
+    sampleGaps.push(segment[i].at - segment[i - 1].at);
+  }
+  sampleGaps.sort((a, b) => a - b);
+  const medianSampleGap: number = sampleGaps[Math.floor(sampleGaps.length / 2)] || 15000;
+  // 切换前 gap 超过 max(中位间隔×10, 2 分钟) → 判定为关机累积跳变，剔除
+  const staleGapThreshold: number = Math.max(medianSampleGap * 10, 2 * 60000);
+  const switchTimes: number[] = [];
+  let prevAt: number = segment[0].at;
+  let lastSeen: number = Math.round(segment[0].level);
+  for (let i = 1; i < segment.length; i += 1) {
+    const lv: number = Math.round(segment[i].level);
+    if (lv !== lastSeen) {
+      if (segment[i].at - prevAt <= staleGapThreshold) switchTimes.push(segment[i].at);
+      lastSeen = lv;
+    }
+    prevAt = segment[i].at;
+  }
+  if (switchTimes.length < 2) return null; // 剔除关机跳变后证据不足
+  // 每档耗时：从第一次有效档位切换到现在 ÷ 切换次数（末档未满也平摊，取长期均值更稳）
+  const perGearMs: number = (segment[segment.length - 1].at - switchTimes[0]) / switchTimes.length;
+  if (perGearMs < 60 * 1000) return null; // 每档不足 1 分钟：切换太快，视为异常
+  return { granularity: g, perGearMinutes: perGearMs / 60000 };
+};
+
 export const estimateTrend = (readings: BatteryReading[], nowCharging: boolean): TrendEstimate => {
   const clean: BatteryReading[] = Array.isArray(readings)
     ? readings.filter(
@@ -169,6 +231,46 @@ export const estimateTrend = (readings: BatteryReading[], nowCharging: boolean):
   }
 
   const slope: number | null = regressSlope(pts);
+
+  // 2.5 档位式设备（电量按 5%/10%/20% 离散跳变）：回归斜率会被阶梯数据搅出
+  // 虚大值（档位切换瞬间）或判平稳（档位内），改用"每档耗时"直接估算 TTF/TTE，
+  // 等效斜率仍返回，供趋势图显示与预测线绘制。
+  const gear: GearMode | null = detectGearMode(segment);
+  if (gear !== null) {
+    const lastLevel: number = last.level;
+    if (nowCharging) {
+      const remainingGears: number = Math.floor((100 - lastLevel) / gear.granularity);
+      const ttfMinutes: number = remainingGears * gear.perGearMinutes;
+      const equivSlope: number = (gear.granularity * 60) / gear.perGearMinutes;
+      return {
+        mode: 'charging',
+        slope: equivSlope,
+        segmentStart: pts[0].at,
+        segmentEnd: last.at,
+        spanMs,
+        sampleCount: pts.length,
+        preliminary: false,
+        ttfMinutes,
+        tteMinutes: null,
+        needMoreMinutes: 0,
+      };
+    }
+    const remainingGears: number = Math.floor(lastLevel / gear.granularity);
+    const tteMinutes: number = remainingGears * gear.perGearMinutes;
+    const equivSlope: number = -(gear.granularity * 60) / gear.perGearMinutes;
+    return {
+      mode: 'discharging',
+      slope: equivSlope,
+      segmentStart: pts[0].at,
+      segmentEnd: last.at,
+      spanMs,
+      sampleCount: pts.length,
+      preliminary: false,
+      ttfMinutes: null,
+      tteMinutes,
+      needMoreMinutes: 0,
+    };
+  }
 
   // 3. 门槛：点数与跨度均达标，且斜率方向与状态匹配 → 稳定预测
   const enoughPoints: boolean = pts.length >= minPoints;
