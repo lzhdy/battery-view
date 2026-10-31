@@ -9,6 +9,7 @@
 
 use std::future::IntoFuture;
 
+use windows::Devices::Bluetooth::BluetoothCacheMode;
 use windows::Devices::Bluetooth::BluetoothLEDevice;
 use windows::Devices::Enumeration::DeviceInformation;
 use windows::Storage::Streams::DataReader;
@@ -70,7 +71,10 @@ pub fn read_ble_battery(vid: u16, pid: u16) -> Option<u8> {
             if u128::from(ch.Uuid().ok()?) != BATT_LEVEL {
                 continue;
             }
-            let op = ch.ReadValueAsync().ok()?;
+            // 强制 Uncached 读取：无参 ReadValueAsync() 默认走 Windows GATT 缓存
+            // （Cached），系统首次连接缓存的值可能长期不变（实测键盘 3h 电量不动）；
+            // ReadValueWithCacheModeAsync(Uncached) 直接从设备读实时 Battery Level。
+            let op = ch.ReadValueWithCacheModeAsync(BluetoothCacheMode::Uncached).ok()?;
             let result = futures::executor::block_on(op.into_future()).ok()?;
             let buf = result.Value().ok()?;
             let reader = DataReader::FromBuffer(&buf).ok()?;
