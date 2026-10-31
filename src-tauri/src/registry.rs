@@ -36,8 +36,9 @@ fn table() -> &'static [DeviceEntry] {
             DeviceEntry { vid: 0x2E8C, pid: None, kind: "gamepad", name: "黑武士 4 Pro", connection: "无线", protocol: "无公开协议", provider_id: PROVIDER_HID },
             // 北通 黑武士 4 Pro（XInput 形态）
             DeviceEntry { vid: 0x045E, pid: Some(0x028E), kind: "gamepad", name: "黑武士 4 Pro (XInput)", connection: "XInput", protocol: "无公开协议", provider_id: PROVIDER_HID },
-            // 京东京造键盘（蓝牙，BLE GATT 电池服务）
-            DeviceEntry { vid: 0x37D7, pid: Some(0x1002), kind: "keyboard", name: "京东京造键盘", connection: "蓝牙", protocol: "BLE GATT 电池服务 (0x180F)", provider_id: PROVIDER_BLE },
+            // 注意：37D7:1002 实为 FlyDigi BS2PRO 散热器（非键盘，用户既定不入列表），已从注册表移除；
+            // 京东京造键盘（蓝牙）经实机核验为 Keychron K8（VID 05AC:PID 024F，传统蓝牙/HID-over-GATT），
+            // 未暴露标准 BLE Battery Service（0x180F），无电量可读，按协议必然处理不入表。
         ]
     })
 }

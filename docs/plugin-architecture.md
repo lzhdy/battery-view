@@ -18,7 +18,7 @@ BatteryView 是一个**通用外设电量平台**：无论什么品牌、什么�
 | 平台与品牌解耦 | 平台层不认识任何品牌，只面向统一 Provider 接口与统一设备状态 |
 | 新设备低成本接入 | 新增设备 = 在设备注册表登记 +（必要时）新增/扩展一个 Provider；平台代码零改动 |
 | 单设备知识单点维护 | VID/PID、名称、类型、连接方式、电量协议收敛到一张注册表，消除分散映射 |
-| 行为不变 | 重构以"现有已验证行为不变"为底线：键盘 94%、达尔优 `--`、托盘每设备一图标、充电弹窗等全部保持 |
+| 行为不变 | 重构以"现有已验证行为不变"为底线：达尔优 `--`、托盘每设备一图标、充电弹窗等全部保持 |
 | 可回归验证 | 每个迁移阶段都有可自动核对的日志断言（`%TEMP%\battery-view-debug.log`） |
 
 ---
@@ -31,7 +31,7 @@ BatteryView 是一个**通用外设电量平台**：无论什么品牌、什么�
 | --- | --- | --- |
 | `src-tauri/src/hid.rs` | 雷蛇外设（RAZER_VID=0x1532） | `list_razer_devices()`（HID 枚举 + 白名单）、`read_battery()`（Razer 90B Feature Report 91 字节帧）、`read_low_battery()`（阈值 5%） |
 | `src-tauri/src/generic.rs` | 通用 HID 外设 | `list_generic_devices()`（SetupAPI 全 HID 枚举 + `identify()` VID:PID 白名单、按 VID:PID 去重）、`read_battery()`（BLE 键盘走 `ble.rs`；标准 HID 电池页 0x84 检测后读占位；其余返回 `(None, false)`） |
-| `src-tauri/src/ble.rs` | BLE GATT 电池服务 | `read_ble_battery(vid, pid)`（WinRT 无参 `FindAllAsync` 枚举已配对设备 → 0x180F → 0x2A19 → ReadByte，实测键盘 94%） |
+| `src-tauri/src/ble.rs` | BLE GATT 电池服务 | `read_ble_battery(vid, pid)`（WinRT 无参 `FindAllAsync` 枚举已配对设备 → 0x180F → 0x2A19 → ReadByte，实测 94%） |
 
 ### 2.2 平台层（命令与轮询，`src-tauri/src/lib.rs`）
 
@@ -154,9 +154,9 @@ pub fn device_registry() -> Vec<DeviceEntry>;
 | 0x260D | 0x1257 | mouse | 达尔优 AE7 | 2.4G | 无公开协议 | hid |
 | 0x2E8C | * | gamepad | 北通 黑武士 4 Pro | 无线 | 预留（私有） | hid |
 | 0x045E | 0x028E | gamepad | 黑武士 4 Pro (XInput) | XInput | 无公开协议 | hid |
-| 0x37D7 | 0x1002 | keyboard | 京东京造键盘 | 蓝牙 | BLE GATT 电池服务 (0x180F) | ble |
 
 > 设备表是**白名单**：不在表中的设备不识别、不进主界面、不进托盘（SteelSeries 等明确排除项天然满足）。
+> **实机核验更正（2026-10-31）**：`37D7:1002` 实为 **FlyDigi BS2PRO 散热器**（非键盘，既定不入列表）→ 条目已从注册表移除；京东京造键盘实为 **Keychron K8（`05AC:024F`，传统蓝牙 + HID-over-GATT）**，未暴露标准 Battery Service（0x180F），无标准电量可读（协议必然，不入表）。早期"键盘 94%"系误读散热器 GATT 电池值。
 
 ### 3.4 平台核心（DeviceManager）
 
@@ -224,7 +224,7 @@ impl DeviceManager {
 - `hid.rs` / `generic.rs` / `ble.rs` 各自包一层 Provider 实现（内部代码不动或仅做薄封装）。
 - 命令 `list_hid_devices` → 改为调用 `DeviceManager::discover()`（对外字段不变，保留 `source` 兼容、新增 `providerId`；前端零改动，P0-3 定案）。
 - 轮询线程改走 DeviceManager。
-- **验收**：键盘 94% / 达尔优 `--` / 托盘每设备一图标 / 充电弹窗 / 主界面列表全部与现状一致；日志断言通过。
+- **验收**：达尔优 `--` / 托盘每设备一图标 / 充电弹窗 / 主界面列表全部与现状一致；日志断言通过。
 
 ### 阶段 B：设备知识收敛到注册表
 
@@ -276,7 +276,7 @@ pub trait DeviceProvider: Send + Sync {
 
 ### P0-2（修订）同 VID:PID 多接口去重按电量能力优先
 
-京东京造键盘存在蓝牙接口（HID-over-GATT，可读 94%）与可能的有线接口（同 VID 37D7）；若"先到先得"去重，插上 USB 会把蓝牙接口顶掉 → 电量变 `--`。
+京东京造键盘存在蓝牙接口（HID-over-GATT，实测 94%）与可能的有线接口（同 VID 37D7）；若"先到先得"去重，插上 USB 会把蓝牙接口顶掉 → 电量变 `--`。（**实机核验更正**：该 94% 实为 FlyDigi BS2PRO 散热器的 GATT 电池值，京东京造键盘＝Keychron K8（05AC:024F）无 0x180F；本 P0-2 机制仍有效，仅论据设备已从注册表移除。）
 
 **修订**：去重按接口电量能力优先级：`BLE GATT 有公开协议 > 标准 HID 电池页(0x84) > 无协议接口`，同优先级保留先枚举者。保证有电量接口永远胜出。
 
