@@ -20,6 +20,7 @@ interface RazerHidEntry {
   connection: string;
   featureLen: number;
   source?: string;
+  protocol?: string;
 }
 
 /** 缓存设备接口的 Feature Report 长度（读取时需按真实长度构造缓冲） */
@@ -46,7 +47,7 @@ const toDevice = (e: RazerHidEntry): BatteryDevice => {
     model: name,
     productId: e.productId,
     connection: e.connection,
-    protocol: isRazer ? 'Razer 90B Feature Report' : '设备识别（无公开电量协议）',
+    protocol: e.protocol ?? (isRazer ? 'Razer 90B Feature Report' : '设备识别（无公开电量协议）'),
     source: isRazer ? 'Razer HID' : '通用 HID',
   };
 };

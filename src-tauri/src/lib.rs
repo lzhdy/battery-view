@@ -5,8 +5,12 @@ use tauri::menu::{MenuBuilder, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 
+mod ble;
 mod generic;
 mod hid;
+mod manager;
+mod provider;
+mod registry;
 mod tray;
 
 // ── 运行时设置（开机自启 / 充电弹窗开关）：static 供轮询线程实时读取，磁盘 JSON 持久化 ──
@@ -306,95 +310,65 @@ fn remove_background(app: tauri::AppHandle) -> Result<(), String> {
 
 /// 枚举全部受支持的外设：
 /// - 雷蛇 HID 设备（真机：DeathAdder V2 Pro 2.4G 接收器 0x007D / 有线 0x007C，走 90B Feature Report）
-/// - 通用外设（达尔优 AE7 鼠标 / SteelSeries 笔记本键盘 / 黑武士 4 Pro 手柄 / 京东京造蓝牙键盘，
-///   识别与名称映射，电量读取视设备公开协议而定）
-/// 返回前端可直接消费的设备列表字段（productId 统一为 "VID:PID"）。
+/// 设备列表（统一走 DeviceManager：注册表过滤 + 去重 + 协议文案直出）。
+/// 字段兼容保持（设计 v0.2 P0-3）：source 保留 razer/generic 旧语义
+/// （前端 `source !== 'generic'` 判雷蛇），新增 providerId；前端零改动。
 #[tauri::command]
 fn list_hid_devices() -> Result<Vec<serde_json::Value>, String> {
     let mut out: Vec<serde_json::Value> = Vec::new();
-    for d in hid::list_razer_devices()? {
-        let pid = d.product_id;
+    for d in manager::get().discover() {
+        let source = if d.provider_id == "razer" { "razer" } else { "generic" };
         out.push(serde_json::json!({
             "id": d.path,
-            "productId": format!("1532:{:04X}", pid),
-            "kind": kind_for_pid(pid),
-            "name": pid_name(pid),
-            "connection": d.connection,
-            "featureLen": d.feature_len,
-            "source": "razer",
-        }));
-    }
-    for d in generic::list_generic_devices() {
-        out.push(serde_json::json!({
-            "id": d.path,
-            "productId": format!("{:04X}:{:04X}", d.vendor_id, d.product_id),
+            "productId": format!("{:04X}:{:04X}", d.vid, d.pid),
             "kind": d.kind,
             "name": d.name,
             "connection": d.connection,
             "featureLen": d.feature_len,
-            "source": "generic",
+            "source": source,
+            "protocol": d.protocol,
+            "providerId": d.provider_id,
         }));
     }
     Ok(out)
 }
 
-/// 读取指定设备的电量与充电状态（按设备路径分流：雷蛇走 90B 协议，通用设备按各自能力）。
+/// 读取指定设备的电量与充电状态（统一走 DeviceManager：path → 注册表定位 provider）。
+/// 雷蛇走 90B 协议，BLE 键盘走 GATT，其余按各自能力；无公开协议返回 "--"。
 #[tauri::command]
 fn read_battery_level(path: String, feature_len: Option<u16>) -> Result<serde_json::Value, String> {
-    let (level, charging) = if path.contains("vid_1532") {
-        hid::read_battery(&path, feature_len.unwrap_or(91))?
-    } else {
-        generic::read_battery(&path, 0, 0)?
-    };
-    Ok(serde_json::json!({ "level": level, "charging": charging }))
+    use std::io::Write;
+    let lvl = manager::get().read_battery_by_path(&path, feature_len)?;
+    // 调试日志：验证统一路由（含 provider 归属）
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true)
+        .open(std::env::temp_dir().join("battery-view-debug.log"))
+    {
+        let _ = writeln!(f, "[cmd] read_battery_level path={} -> {:?}", path, lvl);
+    }
+    Ok(serde_json::json!({ "level": lvl.0, "charging": lvl.1 }))
 }
 
 /// 读取设备固件的低电量阈值（百分比；DeathAdder V2 Pro 真机实测 5%）。
 /// 通用外设无公开低电量阈值协议，返回 null。
 #[tauri::command]
 fn read_low_battery_threshold(path: String, feature_len: Option<u16>) -> Result<Option<u8>, String> {
-    if path.contains("vid_1532") {
-        hid::read_low_battery(&path, feature_len.unwrap_or(91))
-    } else {
-        Ok(None)
-    }
+    manager::get().read_low_by_path(&path, feature_len)
 }
 
-/// 设备 PID → 设备类型（前端大图 / 托盘剪影 / 弹窗图标共用）
-fn kind_for_pid(product_id: u16) -> &'static str {
-    match product_id {
-        // 鼠标
-        0x007C | 0x007D => "mouse", // DeathAdder V2 Pro（有线/2.4G 接收器）
-        0x00B2 => "mouse",          // DeathAdder V3 Pro
-        0x00A6 => "mouse",          // Viper V2 Pro
-        0x00A5 => "mouse",          // Viper V3 Pro
-        0x00AE => "mouse",          // Basilisk V3 Pro
-        // 键盘
-        0x00B3 => "keyboard", // BlackWidow V4 Pro
-        // 耳机
-        0x00C6 => "headset", // Kraken V4 Pro
-        _ => "mouse",        // 未知设备兜底（鼠标轮廓）
-    }
+/// 托盘展示的统一设备状态（雷蛇 HID + 通用 HID 白名单设备合并）
+struct TrayDevice {
+    path: String,
+    name: String,
+    kind: &'static str,
+    connection: &'static str,
+    level: Option<u8>,
+    charging: bool,
 }
 
-/// 常见雷蛇产品名（托盘 tooltip / 前端设备名使用；未收录的退回 PID 显示）
-fn pid_name(product_id: u16) -> &'static str {
-    match product_id {
-        0x007C | 0x007D => "DeathAdder V2 Pro",
-        0x00B2 => "DeathAdder V3 Pro",
-        0x00A6 => "Viper V2 Pro",
-        0x00A5 => "Viper V3 Pro",
-        0x00AE => "Basilisk V3 Pro",
-        0x00B3 => "BlackWidow V4 Pro",
-        0x00C6 => "Kraken V4 Pro",
-        _ => "Razer 设备",
-    }
-}
-
-/// 构建托盘右键菜单：设备列表（PID + 连接方式 + 电量） + 显示/退出
+/// 构建托盘右键菜单：设备列表（名称 + 连接方式 + 电量） + 显示/退出
 fn build_tray_menu(
     app: &tauri::AppHandle,
-    states: &[(hid::RazerHidDevice, Option<u8>, bool)],
+    states: &[TrayDevice],
 ) -> Result<tauri::menu::Menu<tauri::Wry>, String> {
     let menu = MenuBuilder::new(app)
         .text("header", "外设电量坞 · 2.4G Battery View")
@@ -408,13 +382,13 @@ fn build_tray_menu(
         )
         .map_err(|e| e.to_string())?;
     } else {
-        for (dev, level, charging) in states {
-            let pct = match level {
+        for dev in states {
+            let pct = match dev.level {
                 Some(l) => format!("{l}%"),
                 None => "--".to_string(),
             };
-            let chg = if *charging { " · 充电中" } else { "" };
-            let text = format!("{:04X} · {}{} · {}", dev.product_id, dev.connection, chg, pct);
+            let chg = if dev.charging { " · 充电中" } else { "" };
+            let text = format!("{} · {}{} · {}", dev.name, dev.connection, chg, pct);
             menu.append(
                 &MenuItem::with_id(app, format!("dev-{}", dev.path), text, true, None::<&str>)
                     .map_err(|e| e.to_string())?,
@@ -548,6 +522,8 @@ pub fn run() {
     }
     // 加载持久化设置（开机自启 / 充电弹窗开关），供轮询线程与命令读取
     load_prefs();
+    // 初始化平台核心 DeviceManager（统一枚举 + Provider 分发；幂等）
+    manager::init();
     // 开机自启默认开启：确保注册表 Run 键存在（幂等；用户关闭后不再写入）
     if AUTO_START_EN.load(Ordering::Relaxed) {
         let _ = set_autostart_registry(true);
@@ -657,140 +633,146 @@ pub fn run() {
                     }
                 };
                 loop {
-                    match hid::list_razer_devices() {
-                        Ok(devices) => {
-                            let mut states: Vec<(hid::RazerHidDevice, Option<u8>, bool)> = Vec::new();
-                            for dev in &devices {
-                                let (level, charging) =
-                                    hid::read_battery(&dev.path, dev.feature_len).unwrap_or((None, false));
-                                log_line(format!("poll path={} pid={:04X} level={:?} charging={}", dev.path, dev.product_id, level, charging));
-                                states.push((dev.clone(), level, charging));
+                    // 统一枚举 + 注册表过滤 + 去重（设计 v0.2）：全部设备走 DeviceManager，
+                    // 每设备一个托盘图标 + tooltip 电量；日志统一 provider=<id> 前缀（P1-3）
+                    let mut states: Vec<TrayDevice> = Vec::new();
+                    for dev in manager::get().discover() {
+                        let (level, charging) = manager::get()
+                            .read_battery_by_path(&dev.path, Some(dev.feature_len))
+                            .unwrap_or((None, false));
+                        log_line(format!(
+                            "provider={} path={} vid={:04X} pid={:04X} level={:?} charging={}",
+                            dev.provider_id, dev.path, dev.vid, dev.pid, level, charging
+                        ));
+                        states.push(TrayDevice {
+                            path: dev.path.clone(),
+                            name: dev.name.clone(),
+                            kind: dev.kind,
+                            connection: dev.connection,
+                            level,
+                            charging,
+                        });
+                    }
+                    let any_charging = states.iter().any(|d| d.charging);
+                    log_line(format!("any_charging={} prev={:?}", any_charging, prev_any_charging));
+                    // 充电插入跳变：从无充电变为有充电 → 弹窗（受"充电提醒"开关控制）
+                    if prev_any_charging == Some(false)
+                        && any_charging
+                        && POPUP_CHARGING_EN.load(Ordering::Relaxed)
+                    {
+                        if let Some(dev) = states.iter().find(|d| d.charging) {
+                            log_line(">>> CHARGING JUMP DETECTED".to_string());
+                            // 信息行：状态 + 预计充满时间（按约 1%/min 充电速率粗估）
+                            let sub = match dev.level {
+                                Some(l) => {
+                                    let tte = (100i32.saturating_sub(l as i32)).clamp(1, 90);
+                                    format!("充电中 · 约 {} 分钟充满", tte)
+                                }
+                                None => "充电中".to_string(),
+                            };
+                            let payload = format!(
+                                r#"{{"kind":"charging","sticky":false,"title":"开始充电","devices":[{{"kind":"{}","name":"{}","level":{},"charging":true,"sub":"{}"}}]}}"#,
+                                dev.kind,
+                                dev.name,
+                                dev.level.map(|l| l.to_string()).unwrap_or_else(|| "-1".into()),
+                                sub,
+                            );
+                            let h = 65; // 单条：卡片全铺，行 45 + 上下内边距 10×2
+                            let r = show_popup(app_init.clone(), payload, h);
+                            log_line(format!("show_popup result: {:?}", r));
+                        }
+                    }
+                    prev_any_charging = Some(any_charging);
+                    if states.is_empty() {
+                        // 无设备：清掉设备图标，保留兜底入口
+                        for k in trays.keys().cloned().collect::<Vec<_>>() {
+                            if k != "__fallback__" {
+                                let _ = app_init.remove_tray_by_id(&trays[&k].0);
                             }
-                            let any_charging = states.iter().any(|(_, _, c)| *c);
-                            log_line(format!("any_charging={} prev={:?}", any_charging, prev_any_charging));
-                            // 充电插入跳变：从无充电变为有充电 → 弹窗（受"充电提醒"开关控制）
-                            if prev_any_charging == Some(false)
-                                && any_charging
-                                && POPUP_CHARGING_EN.load(Ordering::Relaxed)
+                        }
+                        trays.retain(|k, _| k == "__fallback__");
+                        if !fallback_on {
+                            let icon = tray::render_tray_icon(None, false, "mouse", dark, size);
+                            let menu = match build_tray_menu(&app_init, &[]) {
+                                Ok(m) => m,
+                                Err(e) => {
+                                    eprintln!("[tray] menu build failed: {e}");
+                                    TrayIconBuilder::with_id("tray-fallback")
+                                        .icon(icon.clone())
+                                        .build(&app_init)
+                                        .map(|t| trays.insert("__fallback__".into(), ("tray-fallback".into(), t)))
+                                        .ok();
+                                    continue;
+                                }
+                            };
+                            if let Ok(t) = tray_menu_and_click(
+                                TrayIconBuilder::with_id("tray-fallback")
+                                    .icon(icon)
+                                    .tooltip("外设电量坞 · 未检测到设备"),
+                                menu,
+                            )
+                            .build(&app_init)
                             {
-                                if let Some((dev, level, _)) = states.iter().find(|(_, _, c)| *c) {
-                                    log_line(">>> CHARGING JUMP DETECTED".to_string());
-                                    let kind = kind_for_pid(dev.product_id);
-                                    // 信息行：状态 + 预计充满时间（按约 1%/min 充电速率粗估）
-                                    let sub = match level {
-                                        Some(l) => {
-                                            let tte = (100i32.saturating_sub(*l as i32)).clamp(1, 90);
-                                            format!("充电中 · 约 {} 分钟充满", tte)
-                                        }
-                                        None => "充电中".to_string(),
-                                    };
-                                    let payload = format!(
-                                        r#"{{"kind":"charging","sticky":false,"title":"开始充电","devices":[{{"kind":"{}","name":"{}","level":{},"charging":true,"sub":"{}"}}]}}"#,
-                                        kind,
-                                        pid_name(dev.product_id),
-                                        level.map(|l| l.to_string()).unwrap_or_else(|| "-1".into()),
-                                        sub,
-                                    );
-                                    let h = 65; // 单条：卡片全铺，行 45 + 上下内边距 10×2
-                                    let r = show_popup(app_init.clone(), payload, h);
-                                    log_line(format!("show_popup result: {:?}", r));
-                                }
+                                trays.insert("__fallback__".into(), ("tray-fallback".into(), t));
+                                fallback_on = true;
                             }
-                            prev_any_charging = Some(any_charging);
-                            if states.is_empty() {
-                                // 无设备：清掉设备图标，保留兜底入口
-                                for k in trays.keys().cloned().collect::<Vec<_>>() {
-                                    if k != "__fallback__" {
-                                        let _ = app_init.remove_tray_by_id(&trays[&k].0);
-                                    }
+                        } else if let Some((_, t)) = trays.get("__fallback__") {
+                            let icon = tray::render_tray_icon(None, false, "mouse", dark, size);
+                            let _ = t.set_icon(Some(icon));
+                            let _ = t.set_tooltip(Some("外设电量坞 · 未检测到设备"));
+                        }
+                    } else {
+                        // 有设备：移除兜底
+                        if fallback_on {
+                            let _ = app_init.remove_tray_by_id("tray-fallback");
+                            trays.remove("__fallback__");
+                            fallback_on = false;
+                        }
+                        // 按设备 path 稳定排序，id 用索引（路径含特殊字符不能做 id）
+                        states.sort_by(|a, b| a.path.cmp(&b.path));
+                        // 所有设备托盘图标共享同一菜单（含全部设备行）
+                        let menu = match build_tray_menu(&app_init, &states) {
+                            Ok(m) => m,
+                            Err(e) => {
+                                eprintln!("[tray] menu build failed: {e}");
+                                continue;
+                            }
+                        };
+                        for (i, dev) in states.iter().enumerate() {
+                            let id = format!("tray-{}", i);
+                            let icon = tray::render_tray_icon(dev.level, dev.charging, dev.kind, dark, size);
+                            let pct = dev.level.map(|l| format!("{l}%")).unwrap_or_else(|| "--".into());
+                            let tip = format!(
+                                "{} · {}{}",
+                                dev.name,
+                                pct,
+                                if dev.charging { " · 充电中" } else { "" }
+                            );
+                            match trays.get(&dev.path) {
+                                Some((_, t)) => {
+                                    let _ = t.set_icon(Some(icon));
+                                    let _ = t.set_tooltip(Some(&tip));
                                 }
-                                trays.retain(|k, _| k == "__fallback__");
-                                if !fallback_on {
-                                    let icon = tray::render_tray_icon(None, false, "mouse", dark, size);
-                                    let menu = match build_tray_menu(&app_init, &[]) {
-                                        Ok(m) => m,
-                                        Err(e) => {
-                                            eprintln!("[tray] menu build failed: {e}");
-                                            TrayIconBuilder::with_id("tray-fallback")
-                                                .icon(icon.clone())
-                                                .build(&app_init)
-                                                .map(|t| trays.insert("__fallback__".into(), ("tray-fallback".into(), t)))
-                                                .ok();
-                                            continue;
-                                        }
-                                    };
+                                None => {
                                     if let Ok(t) = tray_menu_and_click(
-                                        TrayIconBuilder::with_id("tray-fallback")
-                                            .icon(icon)
-                                            .tooltip("外设电量坞 · 未检测到设备"),
-                                        menu,
+                                        TrayIconBuilder::with_id(&id).icon(icon).tooltip(tip.as_str()),
+                                        menu.clone(),
                                     )
                                     .build(&app_init)
                                     {
-                                        trays.insert("__fallback__".into(), ("tray-fallback".into(), t));
-                                        fallback_on = true;
-                                    }
-                                } else if let Some((_, t)) = trays.get("__fallback__") {
-                                    let icon = tray::render_tray_icon(None, false, "mouse", dark, size);
-                                    let _ = t.set_icon(Some(icon));
-                                    let _ = t.set_tooltip(Some("外设电量坞 · 未检测到设备"));
-                                }
-                            } else {
-                                // 有设备：移除兜底
-                                if fallback_on {
-                                    let _ = app_init.remove_tray_by_id("tray-fallback");
-                                    trays.remove("__fallback__");
-                                    fallback_on = false;
-                                }
-                                // 按设备 path 稳定排序，id 用索引（路径含特殊字符不能做 id）
-                                states.sort_by(|a, b| a.0.path.cmp(&b.0.path));
-                                // 所有设备托盘图标共享同一菜单（含全部设备行 + 调试入口）
-                                let menu = match build_tray_menu(&app_init, &states) {
-                                    Ok(m) => m,
-                                    Err(e) => {
-                                        eprintln!("[tray] menu build failed: {e}");
-                                        continue;
-                                    }
-                                };
-                                for (i, (dev, level, charging)) in states.iter().enumerate() {
-                                    let id = format!("tray-{}", i);
-                                    let kind = kind_for_pid(dev.product_id);
-                                    let icon = tray::render_tray_icon(*level, *charging, kind, dark, size);
-                                    let pct = level.map(|l| format!("{l}%")).unwrap_or_else(|| "--".into());
-                                    let tip = format!(
-                                        "{} · {}{}",
-                                        pid_name(dev.product_id),
-                                        pct,
-                                        if *charging { " · 充电中" } else { "" }
-                                    );
-                                    match trays.get(&dev.path) {
-                                        Some((_, t)) => {
-                                            let _ = t.set_icon(Some(icon));
-                                            let _ = t.set_tooltip(Some(&tip));
-                                        }
-                                        None => {
-                                            if let Ok(t) = tray_menu_and_click(
-                                                TrayIconBuilder::with_id(&id).icon(icon).tooltip(tip.as_str()),
-                                                menu.clone(),
-                                            )
-                                            .build(&app_init)
-                                            {
-                                                trays.insert(dev.path.clone(), (id, t));
-                                            }
-                                        }
-                                    }
-                                }
-                                // 移除已掉线设备的图标
-                                for k in trays.keys().filter(|k| *k != "__fallback__").cloned().collect::<Vec<_>>() {
-                                    if !states.iter().any(|(d, _, _)| d.path == k) {
-                                        let (id, _) = &trays[&k];
-                                        let _ = app_init.remove_tray_by_id(id.as_str());
-                                        trays.remove(&k);
+                                        trays.insert(dev.path.clone(), (id, t));
                                     }
                                 }
                             }
                         }
-                        Err(_) => {}
+                        // 移除已掉线设备的图标
+                        for k in trays.keys().filter(|k| *k != "__fallback__").cloned().collect::<Vec<_>>() {
+                            if !states.iter().any(|d| d.path == k) {
+                                let (id, _) = &trays[&k];
+                                let _ = app_init.remove_tray_by_id(id.as_str());
+                                trays.remove(&k);
+                            }
+                        }
                     }
                     std::thread::sleep(Duration::from_secs(5));
                 }

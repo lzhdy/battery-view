@@ -1,9 +1,10 @@
 //! 通用（非雷蛇）HID 外设识别层
 //!
-//! 枚举白名单品牌的 HID 设备接口（达尔优 AE7 鼠标 / SteelSeries 键盘 / 北通黑武士 4 Pro 手柄），
-//! 按 VID:PID 分流 kind/名称/连接方式，电量读取先尝试标准 HID 电池协议（0x84 电池强度页），
-//! 无标准协议时返回"暂不支持"（蓝牙设备电池由 sysbat 模块走 Windows 电池类读取）。
-//! FFI 直调系统 DLL，零第三方 crate（与 hid.rs 同一风格）。
+//! 枚举白名单品牌的 HID 设备接口（达尔优 AE7 鼠标 / 北通黑武士 4 Pro 手柄 / 京东京造键盘），
+//! 按 VID:PID 分流 kind/名称/连接方式；电量读取策略：
+//! - 蓝牙键盘（京东京造，BLE HID over GATT）→ 走 ble.rs 的 Windows GATT 电池服务（0x180F/0x2A19）
+//! - 其余（达尔优 2.4G 私有协议 / XInput 手柄 / 有线键盘）→ 无公开电量读取协议，返回"暂不支持"
+//! FFI 直调系统 DLL，零第三方 crate（与 hid.rs 同一风格；BLE 读取走 windows crate WinRT 投影）。
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
@@ -69,13 +70,6 @@ const INVALID_HANDLE_VALUE: isize = -1;
 const FILE_SHARE_READ: u32 = 0x0000_0001;
 const FILE_SHARE_WRITE: u32 = 0x0000_0002;
 const OPEN_EXISTING: u32 = 3;
-
-/// 白名单 VID
-pub const VID_DAREU: u16 = 0x260D; // 达尔优（Dareu）
-pub const VID_STEELSERIES: u16 = 0x1038; // SteelSeries
-pub const VID_BETOP: u16 = 0x2E8C; // 北通（Betop，直连模式预留）
-pub const VID_MS_XINPUT: u16 = 0x045E; // Microsoft XInput 兼容控制器（FlyDigi Vader 4 以 XInput 枚举）
-pub const VID_BLE_KB: u16 = 0x37D7; // BLE HID over GATT 设备（本机为京东京造键盘蓝牙接口）
 
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -178,37 +172,14 @@ struct HIDP_VALUE_CAPS {
     pad2: u32,
 }
 
-/// 识别到的通用设备
-#[derive(Clone, Debug)]
-pub struct GenericHidDevice {
-    /// 设备接口路径（CreateFileW 目标；同时作为前端 deviceId）
-    pub path: String,
-    pub vendor_id: u16,
-    pub product_id: u16,
-    pub kind: &'static str,
-    pub name: &'static str,
-    pub connection: &'static str,
-    pub feature_len: u16,
-}
-
 fn utf16(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(Some(0)).collect()
 }
 
-/// VID:PID → 识别信息（kind / 名称 / 连接方式）
-fn identify(vid: u16, pid: u16) -> Option<(&'static str, &'static str, &'static str)> {
-    match (vid, pid) {
-        (VID_DAREU, 0x1257) => Some(("mouse", "达尔优 AE7", "2.4G")),
-        (VID_STEELSERIES, 0x2052) => Some(("keyboard", "SteelSeries Gaming Keyboard", "有线")),
-        (VID_BETOP, _) => Some(("gamepad", "北通 黑武士 4 Pro", "无线")),
-        (VID_MS_XINPUT, 0x028E) => Some(("gamepad", "黑武士 4 Pro (XInput)", "XInput")),
-        (VID_BLE_KB, 0x1002) => Some(("keyboard", "京东京造键盘", "蓝牙")),
-        _ => None,
-    }
-}
-
-/// 枚举所有 HID 接口（不按 VID 过滤），返回白名单命中的设备
-fn list_generic_once() -> Vec<GenericHidDevice> {
+/// 枚举本机全部 HID 接口（不按 VID/PID 过滤）：(path, vid, pid, feature_len)。
+/// 平台统一枚举源（设计 v0.2 P0-1）：DeviceManager 与 generic 白名单列表共用，
+/// 覆盖雷蛇 / 通用 / BLE HID-over-GATT 三类接口。
+pub fn enumerate_all_hid() -> Vec<(String, u16, u16, u16)> {
     let mut guid: GUID = unsafe { std::mem::zeroed() };
     unsafe { HidD_GetHidGuid(&mut guid) };
     let dev_info = unsafe {
@@ -217,7 +188,7 @@ fn list_generic_once() -> Vec<GenericHidDevice> {
     if dev_info == INVALID_HANDLE_VALUE {
         return Vec::new();
     }
-    let mut out: Vec<GenericHidDevice> = Vec::new();
+    let mut out: Vec<(String, u16, u16, u16)> = Vec::new();
     let mut index: u32 = 0;
     loop {
         let mut if_data: SP_DEVICE_INTERFACE_DATA = unsafe { std::mem::zeroed() };
@@ -298,43 +269,10 @@ fn list_generic_once() -> Vec<GenericHidDevice> {
         if !attrs_ok {
             continue;
         }
-        if let Some((kind, name, connection)) = identify(attrs.vendor_id, attrs.product_id) {
-            out.push(GenericHidDevice {
-                path,
-                vendor_id: attrs.vendor_id,
-                product_id: attrs.product_id,
-                kind,
-                name,
-                connection,
-                feature_len,
-            });
-        }
+        out.push((path, attrs.vendor_id, attrs.product_id, feature_len));
     }
     unsafe { SetupDiDestroyDeviceInfoList(dev_info) };
     out
-}
-
-/// 通用设备列表（按 VID:PID 去重：同一设备的多个 HID 集合只保留第一个接口）
-pub fn list_generic_devices() -> Vec<GenericHidDevice> {
-    let mut seen: Vec<(u16, u16)> = Vec::new();
-    let mut result: Vec<GenericHidDevice> = Vec::new();
-    for attempt in 0..5 {
-        let all = list_generic_once();
-        for d in all {
-            if seen.contains(&(d.vendor_id, d.product_id)) {
-                continue;
-            }
-            seen.push((d.vendor_id, d.product_id));
-            result.push(d);
-        }
-        // 命中白名单任一设备即收敛
-        if !result.is_empty() {
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        let _ = attempt;
-    }
-    result
 }
 
 /// 该 HID 接口是否暴露标准 HID 电池强度页（Power Device page 0x84）
@@ -373,11 +311,12 @@ fn has_battery_page(handle: isize) -> bool {
     hit
 }
 
-/// 读取通用设备电量：
-/// - 标准 HID 电池（0x84 页）设备：读 Input Report 得电池强度（当前本机外设均无此页）
-/// - 其余（达尔优 2.4G / XInput 手柄 / 有线键盘 / 蓝牙键盘）：无公开读取协议 →
+/// 读取标准 HID 设备电量（HID Provider 只接收注册表 provider_id=hid 的设备）：
+/// - 标准 HID 电池（0x84 页）设备：检测到该页时返回 None（读取实现待有此类设备后补全）
+/// - 其余（达尔优 2.4G / XInput 手柄）：无公开读取协议 →
 ///   返回 Ok((None, false))，前端显示 "--"（不报错、不影响设备识别）
-pub fn read_battery(path: &str, _vid: u16, _pid: u16) -> Result<(Option<u8>, bool), String> {
+/// - BLE 键盘由 BLE Provider 单独路由（ble.rs），不在此处处理（P4 已收敛）
+pub fn read_battery(path: &str) -> Result<(Option<u8>, bool), String> {
     let w = utf16(path);
     let handle = unsafe {
         CreateFileW(

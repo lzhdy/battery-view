@@ -70,6 +70,8 @@ export const useBatteryApp = (): UseBatteryAppResult => {
   });
   const [names, setNames] = useState<NameOverrides>({});
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  // 是否已人工选择设备：人工选择后不再做默认选中校准
+  const [autoSelected, setAutoSelected] = useState<boolean>(false);
   const [busy, setBusy] = useState<Record<string, boolean>>({});
 
   const readingsRef = useRef<BatteryReading[]>([]);
@@ -200,12 +202,30 @@ export const useBatteryApp = (): UseBatteryAppResult => {
     return () => window.clearInterval(timer);
   }, [settings.autoRefresh, settings.intervalSec]);
 
+  // 启动校准：默认选中跳转到第一个"有电量读数"的设备。
+  // 读不到电量的外设（如达尔优 AE7 2.4G）会停在"等待读取"，不该占据默认主区视图；
+  // 用户手动选择设备后不再干预。
+  useEffect(() => {
+    if (autoSelected) return;
+    if (selectedId === null || devices.length === 0) return;
+    const current = devices.find((d: BatteryDevice) => d.id === selectedId);
+    if (!current) return;
+    const curBattery = states[current.id]?.battery;
+    if (curBattery == null && devices.some((d) => states[d.id]?.battery != null)) {
+      const firstLive = devices.find((d) => states[d.id]?.battery != null);
+      if (firstLive) setSelectedId(firstLive.id);
+    }
+  }, [autoSelected, devices, states, selectedId]);
+
   const displayName = useCallback(
     (device: BatteryDevice): string => names[device.id] ?? device.name,
     [names],
   );
 
-  const select = useCallback((id: string) => setSelectedId(id), []);
+  const select = useCallback((id: string) => {
+    setAutoSelected(true);
+    setSelectedId(id);
+  }, []);
 
   const rename = useCallback((id: string, name: string) => {
     setNames((prev: NameOverrides) => {
