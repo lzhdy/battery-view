@@ -116,8 +116,9 @@ const detectGearMode = (segment: BatteryReading[]): GearMode | null => {
   }
   sampleGaps.sort((a, b) => a - b);
   const medianSampleGap: number = sampleGaps[Math.floor(sampleGaps.length / 2)] || 15000;
-  // 切换前 gap 超过 max(中位间隔×10, 2 分钟) → 判定为关机累积跳变，剔除
-  const staleGapThreshold: number = Math.max(medianSampleGap * 10, 2 * 60000);
+  // 切换前 gap 超过 max(中位间隔×20, 5 分钟) → 判定为关机累积跳变，剔除。
+  // 一天内多次开关程序的场景下，每次重启跳变都落在此区间，不会混入粒度证据。
+  const staleGapThreshold: number = Math.max(medianSampleGap * 20, 5 * 60000);
   const switchTimes: number[] = [];
   let prevAt: number = segment[0].at;
   let lastSeen: number = Math.round(segment[0].level);
@@ -130,9 +131,25 @@ const detectGearMode = (segment: BatteryReading[]): GearMode | null => {
     prevAt = segment[i].at;
   }
   if (switchTimes.length < 2) return null; // 剔除关机跳变后证据不足
-  // 每档耗时：从第一次有效档位切换到现在 ÷ 切换次数（末档未满也平摊，取长期均值更稳）
-  const perGearMs: number = (segment[segment.length - 1].at - switchTimes[0]) / switchTimes.length;
-  if (perGearMs < 60 * 1000) return null; // 每档不足 1 分钟：切换太快，视为异常
+  // 每档耗时：取"两段相邻有效切换之间全程连续采样"的间隔中位数。
+  // 关机空窗所在切换已被剔除，但若两次切换之间隔着一次关机（切换本身合法、
+  // 间隔里混入空窗时长），该间隔丢弃——宁可回退回归，不给被污染的档位预测。
+  const intervals: number[] = [];
+  for (let i = 1; i < switchTimes.length; i += 1) {
+    const tA: number = switchTimes[i - 1];
+    const tB: number = switchTimes[i];
+    let maxGapInBetween: number = 0;
+    for (let j = 1; j < segment.length; j += 1) {
+      if (segment[j].at >= tA && segment[j].at <= tB) {
+        maxGapInBetween = Math.max(maxGapInBetween, segment[j].at - segment[j - 1].at);
+      }
+    }
+    if (maxGapInBetween <= staleGapThreshold) intervals.push(tB - tA);
+  }
+  if (intervals.length === 0) return null;
+  intervals.sort((a, b) => a - b);
+  const perGearMs: number = intervals[Math.floor(intervals.length / 2)];
+  if (perGearMs < 10 * 60000) return null; // 每档不足 10 分钟：异常快，视为数据污染
   return { granularity: g, perGearMinutes: perGearMs / 60000 };
 };
 
