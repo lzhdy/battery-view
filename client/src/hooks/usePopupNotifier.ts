@@ -13,6 +13,7 @@ import type {
   DeviceLiveState,
 } from '@client/src/utils/battery/types';
 import { estimateTrend } from '@client/src/utils/battery/predict';
+import { loadGearProfiles, updateGearProfile } from '@client/src/utils/battery/store';
 import {
   showPopup,
   type PopupDeviceRow,
@@ -42,7 +43,9 @@ const estText = (
     .filter((r) => r.deviceId === deviceId)
     .sort((a, b) => a.at - b.at);
   if (list.length < 3) return charging ? '充电中' : '放电中';
-  const est = estimateTrend(list, charging);
+  const knownGear = loadGearProfiles()[deviceId] ?? null;
+  const est = estimateTrend(list, charging, knownGear);
+  if (est.learnedGear) updateGearProfile(deviceId, est.learnedGear);
   if (charging && est.ttfMinutes != null) {
     if (est.ttfMinutes > MAX_EST_MINUTES) return '充电中 · 预计 7 天以上充满';
     return `充电中 · 预计约 ${Math.max(1, Math.round(est.ttfMinutes))} 分钟充满`;

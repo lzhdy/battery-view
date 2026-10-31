@@ -17,17 +17,23 @@ import {
   CHARGING_HEX,
   type BatteryReading,
 } from '@client/src/utils/battery/types';
+import { loadGearProfiles, updateGearProfile } from '@client/src/utils/battery/store';
 
 interface TrendCardProps {
   readings: BatteryReading[];
   charging: boolean;
+  deviceId?: string;
 }
 
-const TrendCard: React.FC<TrendCardProps> = ({ readings, charging }) => {
+const TrendCard: React.FC<TrendCardProps> = ({ readings, charging, deviceId }) => {
   const safe: BatteryReading[] = (Array.isArray(readings) ? readings : []).filter(
     (r) => !!r && typeof r === 'object' && typeof r.at === 'number' && typeof r.level === 'number',
   );
-  const est: TrendEstimate = estimateTrend(safe, charging);
+  const knownGear = deviceId ? (loadGearProfiles()[deviceId] ?? null) : null;
+  const est: TrendEstimate = estimateTrend(safe, charging, knownGear);
+  React.useEffect(() => {
+    if (deviceId && est.learnedGear) updateGearProfile(deviceId, est.learnedGear);
+  }, [deviceId, est.learnedGear]);
   const points: [number, number][] = safe
     .slice(-MAX_TREND_POINTS)
     .map((r: BatteryReading): [number, number] => [r.at, r.level]);

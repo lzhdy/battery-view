@@ -23,7 +23,15 @@ export interface NameOverrides {
 const READINGS_KEY = 'battery-view/readings/v3';
 const SETTINGS_KEY = 'battery-view/settings';
 const NAMES_KEY = 'battery-view/names';
+const GEAR_KEY = 'battery-view/gear-profile/v1';
 export const MAX_READINGS_PER_DEVICE = 4000;
+
+/** 设备档位档案：粒度与每档耗时由严格检测学到一次后持久化，跨次启动作为先验 */
+export interface GearProfile {
+  granularity: number;
+  perGearMinutes: number;
+  updatedAt: number;
+}
 
 const DEFAULT_SETTINGS: AppSettings = {
   autoRefresh: true,
@@ -129,4 +137,25 @@ export const loadNameOverrides = (): NameOverrides => {
 export const saveNameOverrides = (names: NameOverrides): void => {
   if (typeof window === 'undefined') return;
   window.localStorage.setItem(NAMES_KEY, JSON.stringify(names));
+};
+
+export const loadGearProfiles = (): Record<string, GearProfile> => {
+  if (typeof window === 'undefined') return {};
+  return parse<Record<string, GearProfile>>(window.localStorage.getItem(GEAR_KEY), {});
+};
+
+/** 学到新档位观测时 EMA 平滑写回（避免单次观测抖动覆盖长期均值） */
+export const updateGearProfile = (
+  deviceId: string,
+  learned: { granularity: number; perGearMinutes: number },
+): void => {
+  if (typeof window === 'undefined') return;
+  const all: Record<string, GearProfile> = loadGearProfiles();
+  const prev: GearProfile | undefined = all[deviceId];
+  const perGearMinutes: number =
+    prev && prev.granularity === learned.granularity
+      ? prev.perGearMinutes * 0.7 + learned.perGearMinutes * 0.3
+      : learned.perGearMinutes;
+  all[deviceId] = { granularity: learned.granularity, perGearMinutes, updatedAt: Date.now() };
+  window.localStorage.setItem(GEAR_KEY, JSON.stringify(all));
 };

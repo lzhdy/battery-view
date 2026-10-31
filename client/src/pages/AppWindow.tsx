@@ -117,7 +117,7 @@ const AppWindow: React.FC = () => {
               </div>
             </section>
             <section className="mb-4 grid min-h-[268px] grid-cols-[1fr_320px] gap-4 max-lg:grid-cols-1">
-              <TrendCard readings={selectedReadings} charging={selectedState?.charging === true} />
+              <TrendCard readings={selectedReadings} charging={selectedState?.charging === true} deviceId={selected?.id} />
               <DeviceInfoCard
                 device={selected}
                 state={selectedState}

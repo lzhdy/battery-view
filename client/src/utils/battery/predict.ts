@@ -41,6 +41,14 @@ export interface TrendEstimate {
   tteMinutes: number | null;
   /** 还差多少分钟才满足门槛（mode=insufficient 时提示用） */
   needMoreMinutes: number;
+  /** 本次新学到的档位粒度与每档耗时（调用方写回 localStorage，供跨次启动先验） */
+  learnedGear?: { granularity: number; perGearMinutes: number };
+}
+
+/** 先验档位档案（来自 localStorage） */
+export interface KnownGear {
+  granularity: number;
+  perGearMinutes: number;
 }
 
 /** 3 点移动平均，抑制 ±1-2% 抖动；不足 3 点返回原序列 */
@@ -83,6 +91,34 @@ interface GearMode {
 
 const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
 
+/** 关机空窗判定阈值：切换前 gap 超过 max(中位轮询×20, 5 分钟) 视为关机累积跳变 */
+const staleGapThresholdOf = (segment: BatteryReading[]): number => {
+  const sampleGaps: number[] = [];
+  for (let i = 1; i < segment.length; i += 1) {
+    sampleGaps.push(segment[i].at - segment[i - 1].at);
+  }
+  sampleGaps.sort((a, b) => a - b);
+  const medianSampleGap: number = sampleGaps[Math.floor(sampleGaps.length / 2)] || 15000;
+  return Math.max(medianSampleGap * 20, 5 * 60000);
+};
+
+/** 收集段内"干净的"档位切换时刻：切换前 gap 正常（非关机空窗）的切换才保留 */
+const collectValidSwitches = (segment: BatteryReading[]): number[] => {
+  const threshold: number = staleGapThresholdOf(segment);
+  const switchTimes: number[] = [];
+  let prevAt: number = segment[0].at;
+  let lastSeen: number = Math.round(segment[0].level);
+  for (let i = 1; i < segment.length; i += 1) {
+    const lv: number = Math.round(segment[i].level);
+    if (lv !== lastSeen) {
+      if (segment[i].at - prevAt <= threshold) switchTimes.push(segment[i].at);
+      lastSeen = lv;
+    }
+    prevAt = segment[i].at;
+  }
+  return switchTimes;
+};
+
 /**
  * 检测"档位式"电量：读数按离散档位跳变（5%/10%/20%…，不固定粒度），
  * 而非 1% 连续变化。判断依据：段内不同档位的相邻差值全部是同一公约数的倍数，
@@ -92,8 +128,8 @@ const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b));
  * 关键边界：
  * 1. 必须 ≥2 次有效档位跳变才承认粒度；
  * 2. 关机跳变剔除——程序关闭一段时间后重启、电量一下跨档，该次跳变前的
- *    采样间隔远大于正常轮询间隔，属于关机空窗的累积跳变，不计入粒度证据
- *    （否则真实 5% 设备会被关机 10% 跳变污染，perGear 严重偏短）。
+ *    采样间隔远大于正常轮询间隔，属于关机空窗的累积跳变，不计入粒度证据；
+ * 3. 两次切换之间混入关机空窗的间隔丢弃——宁可回退回归，不给污染预测。
  */
 const detectGearMode = (segment: BatteryReading[]): GearMode | null => {
   if (segment.length < 2) return null;
@@ -109,31 +145,12 @@ const detectGearMode = (segment: BatteryReading[]): GearMode | null => {
   if (diffs.length === 0) return null;
   const g: number = diffs.reduce(gcd, diffs[0]);
   if (g < 2 || g > 25) return null;
-  // 正常采样间隔（段内相邻样本间隔的中位数），用于识别关机空窗跳变
-  const sampleGaps: number[] = [];
-  for (let i = 1; i < segment.length; i += 1) {
-    sampleGaps.push(segment[i].at - segment[i - 1].at);
-  }
-  sampleGaps.sort((a, b) => a - b);
-  const medianSampleGap: number = sampleGaps[Math.floor(sampleGaps.length / 2)] || 15000;
-  // 切换前 gap 超过 max(中位间隔×20, 5 分钟) → 判定为关机累积跳变，剔除。
-  // 一天内多次开关程序的场景下，每次重启跳变都落在此区间，不会混入粒度证据。
-  const staleGapThreshold: number = Math.max(medianSampleGap * 20, 5 * 60000);
-  const switchTimes: number[] = [];
-  let prevAt: number = segment[0].at;
-  let lastSeen: number = Math.round(segment[0].level);
-  for (let i = 1; i < segment.length; i += 1) {
-    const lv: number = Math.round(segment[i].level);
-    if (lv !== lastSeen) {
-      if (segment[i].at - prevAt <= staleGapThreshold) switchTimes.push(segment[i].at);
-      lastSeen = lv;
-    }
-    prevAt = segment[i].at;
-  }
+  const staleGapThreshold: number = staleGapThresholdOf(segment);
+  const switchTimes: number[] = collectValidSwitches(segment);
   if (switchTimes.length < 2) return null; // 剔除关机跳变后证据不足
   // 每档耗时：取"两段相邻有效切换之间全程连续采样"的间隔中位数。
   // 关机空窗所在切换已被剔除，但若两次切换之间隔着一次关机（切换本身合法、
-  // 间隔里混入空窗时长），该间隔丢弃——宁可回退回归，不给被污染的档位预测。
+  // 间隔里混入空窗时长），该间隔丢弃。
   const intervals: number[] = [];
   for (let i = 1; i < switchTimes.length; i += 1) {
     const tA: number = switchTimes[i - 1];
@@ -153,7 +170,11 @@ const detectGearMode = (segment: BatteryReading[]): GearMode | null => {
   return { granularity: g, perGearMinutes: perGearMs / 60000 };
 };
 
-export const estimateTrend = (readings: BatteryReading[], nowCharging: boolean): TrendEstimate => {
+export const estimateTrend = (
+  readings: BatteryReading[],
+  nowCharging: boolean,
+  knownGear: KnownGear | null = null,
+): TrendEstimate => {
   const clean: BatteryReading[] = Array.isArray(readings)
     ? readings.filter(
         (r): r is BatteryReading =>
@@ -270,6 +291,7 @@ export const estimateTrend = (readings: BatteryReading[], nowCharging: boolean):
         ttfMinutes,
         tteMinutes: null,
         needMoreMinutes: 0,
+        learnedGear: { granularity: gear.granularity, perGearMinutes: gear.perGearMinutes },
       };
     }
     const remainingGears: number = Math.floor(lastLevel / gear.granularity);
@@ -286,7 +308,38 @@ export const estimateTrend = (readings: BatteryReading[], nowCharging: boolean):
       ttfMinutes: null,
       tteMinutes,
       needMoreMinutes: 0,
+      learnedGear: { granularity: gear.granularity, perGearMinutes: gear.perGearMinutes },
     };
+  }
+
+  // 2.6 先验档位：当前段证据不足（如刚开机、一天多次开关机），但该设备历史已学到
+  // 档位粒度——若段内档位值都对齐历史粒度、且至少 1 次干净有效切换，直接用历史
+  // 每档耗时出初步预测，不必每次开机重新攒证据。
+  if (knownGear !== null && !nowCharging) {
+    const g: number = knownGear.granularity;
+    const levelSet: number[] = [...new Set(segment.map((r) => Math.round(r.level)))];
+    const aligned: boolean =
+      levelSet.length >= 2 && levelSet.every((lv) => lv % g === 0);
+    if (aligned) {
+      const switches: number[] = collectValidSwitches(segment);
+      if (switches.length >= 1) {
+        const remainingGears: number = Math.floor(last.level / g);
+        const tteMinutes: number = remainingGears * knownGear.perGearMinutes;
+        const equivSlope: number = -(g * 60) / knownGear.perGearMinutes;
+        return {
+          mode: 'discharging',
+          slope: equivSlope,
+          segmentStart: pts[0].at,
+          segmentEnd: last.at,
+          spanMs,
+          sampleCount: pts.length,
+          preliminary: true,
+          ttfMinutes: null,
+          tteMinutes,
+          needMoreMinutes: 0,
+        };
+      }
+    }
   }
 
   // 3. 门槛：点数与跨度均达标，且斜率方向与状态匹配 → 稳定预测
