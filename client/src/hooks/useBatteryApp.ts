@@ -37,8 +37,7 @@ export interface UseBatteryAppResult {
   updateSettings: (patch: Partial<AppSettings>) => void;
 }
 
-const capReadingsPerDevice = (readings: BatteryReading[]): BatteryReading[] => {
-  const safe: BatteryReading[] = (Array.isArray(readings) ? readings : []).filter(
+const capReadingsPerDevice = (readings: BatteryReading[]): BatteryReading[] => {  const safe: BatteryReading[] = (Array.isArray(readings) ? readings : []).filter(
     (r): r is BatteryReading =>
       !!r && typeof r === 'object' && typeof r.at === 'number' && typeof r.deviceId === 'string',
   );
@@ -138,6 +137,64 @@ export const useBatteryApp = (): UseBatteryAppResult => {
     });
   };
 
+  // 设备热插拔同步：周期重枚举设备列表，新增设备立即读取，消失设备连同其状态一并移除。
+  // 原实现只在挂载时 listDevices 一次，插拔后前端仍持有旧设备且刷新失败时保留旧状态
+  // （例：有线 AE7 1250 拔下后 UI 仍显示"充电中"）。此函数修复该遗漏。
+  const syncDevicesRef = useRef<() => void>(() => {});
+  syncDevicesRef.current = () => {
+    getBatteryProvider()
+      .listDevices()
+      .then((list: BatteryDevice[]) => {
+        const prev = devicesRef.current;
+        const prevIds = new Set(prev.map((d: BatteryDevice) => d.id));
+        const nextIds = new Set(list.map((d: BatteryDevice) => d.id));
+        const gone: BatteryDevice[] = prev.filter(
+          (d: BatteryDevice) => !nextIds.has(d.id),
+        );
+        const added: BatteryDevice[] = list.filter(
+          (d: BatteryDevice) => !prevIds.has(d.id),
+        );
+        if (gone.length > 0 || added.length > 0 || prev.length !== list.length) {
+          setDevices(list);
+        }
+        if (gone.length > 0) {
+          // 设备已拔出：清除其残留实时状态与阈值，避免 UI 显示陈旧电量/充电状态
+          setStates((s: Record<string, DeviceLiveState>) => {
+            const next: Record<string, DeviceLiveState> = { ...s };
+            gone.forEach((g: BatteryDevice) => delete next[g.id]);
+            return next;
+          });
+          setThresholds((t: Record<string, number>) => {
+            const next: Record<string, number> = { ...t };
+            gone.forEach((g: BatteryDevice) => delete next[g.id]);
+            return next;
+          });
+        }
+        setSelectedId((prevId: string | null) => {
+          if (prevId === null || nextIds.has(prevId)) return prevId;
+          // 当前选中的设备已消失 → 跳回第一个设备
+          return list[0]?.id ?? null;
+        });
+        added.forEach((d: BatteryDevice) => {
+          void refreshRef.current(d.id);
+          const provider = getBatteryProvider();
+          if (provider.readLowBatteryThreshold) {
+            void provider
+              .readLowBatteryThreshold(d.id)
+              .then((t: number | null) => {
+                if (t !== null) {
+                  setThresholds((prev: Record<string, number>) => ({
+                    ...prev,
+                    [d.id]: t,
+                  }));
+                }
+              })
+              .catch(() => undefined);
+          }
+        });
+      });
+  };
+
   useEffect(() => {
     const loaded: BatteryReading[] = loadReadings();
     readingsRef.current = loaded;
@@ -167,29 +224,8 @@ export const useBatteryApp = (): UseBatteryAppResult => {
         });
       });
     }
-    void getBatteryProvider()
-      .listDevices()
-      .then((list: BatteryDevice[]) => {
-        setDevices(list);
-        if (list.length > 0) setSelectedId(list[0].id);
-        list.forEach((d: BatteryDevice) => {
-          void refreshRef.current(d.id);
-          const provider = getBatteryProvider();
-          if (provider.readLowBatteryThreshold) {
-            void provider
-              .readLowBatteryThreshold(d.id)
-              .then((t: number | null) => {
-                if (t !== null) {
-                  setThresholds((prev: Record<string, number>) => ({
-                    ...prev,
-                    [d.id]: t,
-                  }));
-                }
-              })
-              .catch(() => undefined);
-          }
-        });
-      });
+    // 首次枚举设备并读取（后续由下方周期任务持续同步，支持热插拔）
+    syncDevicesRef.current();
   }, []);
 
   useEffect(() => {
@@ -201,6 +237,14 @@ export const useBatteryApp = (): UseBatteryAppResult => {
     }, settings.intervalSec * 1000);
     return () => window.clearInterval(timer);
   }, [settings.autoRefresh, settings.intervalSec]);
+
+  // 设备热插拔重枚举（15s 周期，独立于电量刷新；设备消失即清除其状态）
+  useEffect(() => {
+    const timer: number = window.setInterval(() => {
+      syncDevicesRef.current();
+    }, 15000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   // 启动校准：默认选中跳转到第一个"有电量读数"的设备。
   // 读不到电量的外设（如达尔优 AE7 2.4G）会停在"等待读取"，不该占据默认主区视图；
