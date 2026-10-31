@@ -28,7 +28,11 @@ interface Args {
   enabled: { boot: boolean; low: boolean; charging: boolean };
 }
 
-/** 预计可读文案：放电→可用约 X 小时；充电→约 X 分钟充满 */
+/** 预计可读文案：放电→可用约 X 小时；充电→约 X 分钟充满
+ *  上限钳制：斜率接近 0（如 2.4G 鼠标几乎不掉电）时 tteMinutes/ttfMinutes 会放大到
+ *  数十万小时，与主界面 TrendCard 的 formatDurationZh 口径对齐（>7 天只显示"7 天以上"）。
+ */
+const MAX_EST_MINUTES = 7 * 24 * 60;
 const estText = (
   deviceId: string,
   readings: BatteryReading[],
@@ -40,9 +44,11 @@ const estText = (
   if (list.length < 3) return charging ? '充电中' : '放电中';
   const est = estimateTrend(list, charging);
   if (charging && est.ttfMinutes != null) {
+    if (est.ttfMinutes > MAX_EST_MINUTES) return '充电中 · 预计 7 天以上充满';
     return `充电中 · 预计约 ${Math.max(1, Math.round(est.ttfMinutes))} 分钟充满`;
   }
   if (!charging && est.tteMinutes != null) {
+    if (est.tteMinutes > MAX_EST_MINUTES) return '预计可用约 7 天以上';
     const mins = est.tteMinutes;
     const h = Math.floor(mins / 60);
     const m = Math.round(mins % 60);

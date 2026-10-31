@@ -574,6 +574,18 @@ pub fn run() {
         })
         .setup(|app| {
             let app = app.handle().clone();
+            // 主窗口关闭语义 = 隐藏到托盘：TitleBar 的 X 按钮调用 window.close() 会销毁窗口，
+            // 之后托盘"显示主界面"show() 一个已销毁的窗口无效（表现为"打不开"）。
+            // 拦截 CloseRequested 并改为隐藏，托盘/菜单可随时唤回；真正退出走托盘"退出"（app.exit）。
+            if let Some(win) = app.get_webview_window("main") {
+                let hide_win = win.clone();
+                win.on_window_event(move |event| {
+                    if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                        api.prevent_close();
+                        let _ = hide_win.hide();
+                    }
+                });
+            }
             // 兜底：窗口初始隐藏（见 tauri.conf visible:false），4 秒后无论前端是否就绪都强制显示，
             // 避免渲染失败导致窗口永久隐藏；正常路径由前端 invoke show_main_after_ready 提前显示。
             {
@@ -624,6 +636,8 @@ pub fn run() {
                 use std::io::Write;
                 let mut trays: HashMap<String, (String, tauri::tray::TrayIcon)> = HashMap::new();
                 let mut fallback_on: bool = false;
+                // 最近一次成功电量（path → %）：读取偶发失败时沿用，托盘电量条不掉闪
+                let mut last_levels: HashMap<String, u8> = HashMap::new();
                 // 全局充电状态检测：插拔充电线会导致 HID 设备 path 变化（007C↔007D），
                 // 不能依赖 per-path 记录；用"全局是否有设备在充电"的跳变检测（第一轮只记录不弹）
                 let mut prev_any_charging: Option<bool> = None;
@@ -741,8 +755,16 @@ pub fn run() {
                         };
                         for (i, dev) in states.iter().enumerate() {
                             let id = format!("tray-{}", i);
-                            let icon = tray::render_tray_icon(dev.level, dev.charging, dev.kind, dark, size);
-                            let pct = dev.level.map(|l| format!("{l}%")).unwrap_or_else(|| "--".into());
+                            // 读取偶发失败（level=None）时沿用上次电量渲染，避免托盘电量条闪空/掉线
+                            let eff_level: Option<u8> = match dev.level {
+                                Some(l) => {
+                                    last_levels.insert(dev.path.clone(), l);
+                                    Some(l)
+                                }
+                                None => last_levels.get(&dev.path).copied(),
+                            };
+                            let icon = tray::render_tray_icon(eff_level, dev.charging, dev.kind, dark, size);
+                            let pct = eff_level.map(|l| format!("{l}%")).unwrap_or_else(|| "--".into());
                             let tip = format!(
                                 "{} · {}{}",
                                 dev.name,
@@ -766,12 +788,13 @@ pub fn run() {
                                 }
                             }
                         }
-                        // 移除已掉线设备的图标
+                        // 移除已掉线设备的图标（同时清掉其电量缓存）
                         for k in trays.keys().filter(|k| *k != "__fallback__").cloned().collect::<Vec<_>>() {
                             if !states.iter().any(|d| d.path == k) {
                                 let (id, _) = &trays[&k];
                                 let _ = app_init.remove_tray_by_id(id.as_str());
                                 trays.remove(&k);
+                                last_levels.remove(&k);
                             }
                         }
                     }

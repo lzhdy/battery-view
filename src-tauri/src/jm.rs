@@ -16,6 +16,7 @@
 
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
+use std::sync::Mutex;
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -194,9 +195,8 @@ fn write_report(handle: isize, pkt: &[u8; JM_REPORT_LEN]) -> Result<u32, u32> {
     Err(err)
 }
 
-/// 在指定接口读取电量（调用方保证 path 是 JM 命令集合接口）：
-/// 响应帧体[5]=电量%（0..100）、帧体[6]=状态（0x00 正常/0x01 普通充电/0x02 快充）
-pub fn read_battery(path: &str) -> Result<(Option<u8>, bool), String> {
+/// 单次 open→写命令→读响应→close 的完整查询（锁外调用方持锁）
+fn read_once(path: &str) -> Result<(Option<u8>, bool), String> {
     let handle = open_cmd(path)?;
     let frame = build_battery_frame();
     match write_report(handle, &frame) {
@@ -227,4 +227,24 @@ pub fn read_battery(path: &str) -> Result<(Option<u8>, bool), String> {
         return Err("设备未应答电量命令（超时）".to_string());
     }
     Ok((level, charging))
+}
+
+/// 在指定接口读取电量（调用方保证 path 是 JM 命令集合接口）：
+/// 响应帧体[5]=电量%（0..100）、帧体[6]=状态（0x00 正常/0x01 普通充电/0x02 快充）
+///
+/// 并发说明：JM 命令/响应走 HID 双向共享管道，若两个读取线程（前端 15s 轮询 +
+/// Rust 托盘 5s 轮询）同时 open 并读写同一接口，写入命令的响应可能被对方线程的
+/// pending ReadFile 抢先接收，导致本方超时失败（实测 level=None 占比高达 ~47%）。
+/// 因此整个读流程用全局互斥锁串行化，同一时刻只有一个读取者在占用该接口；
+/// 且设备偶尔不应答（约 1/3 概率），失败后 150ms 重试一次再判定。
+static JM_READ_LOCK: Mutex<()> = Mutex::new(());
+pub fn read_battery(path: &str) -> Result<(Option<u8>, bool), String> {
+    let _guard = JM_READ_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    match read_once(path) {
+        Ok(v) => return Ok(v),
+        Err(_) => {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            read_once(path)
+        }
+    }
 }
