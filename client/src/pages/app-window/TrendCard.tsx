@@ -22,18 +22,19 @@ import { loadGearProfiles, updateGearProfile } from '@client/src/utils/battery/s
 interface TrendCardProps {
   readings: BatteryReading[];
   charging: boolean;
-  deviceId?: string;
+  /** 档位档案 key：设备 VID:PID（硬件型号，插拔/改名不丢历史） */
+  gearKey?: string;
 }
 
-const TrendCard: React.FC<TrendCardProps> = ({ readings, charging, deviceId }) => {
+const TrendCard: React.FC<TrendCardProps> = ({ readings, charging, gearKey }) => {
   const safe: BatteryReading[] = (Array.isArray(readings) ? readings : []).filter(
     (r) => !!r && typeof r === 'object' && typeof r.at === 'number' && typeof r.level === 'number',
   );
-  const knownGear = deviceId ? (loadGearProfiles()[deviceId] ?? null) : null;
+  const knownGear = gearKey ? (loadGearProfiles()[gearKey] ?? null) : null;
   const est: TrendEstimate = estimateTrend(safe, charging, knownGear);
   React.useEffect(() => {
-    if (deviceId && est.learnedGear) updateGearProfile(deviceId, est.learnedGear);
-  }, [deviceId, est.learnedGear]);
+    if (gearKey && est.learnedGear) updateGearProfile(gearKey, est.learnedGear);
+  }, [gearKey, est.learnedGear]);
   const points: [number, number][] = safe
     .slice(-MAX_TREND_POINTS)
     .map((r: BatteryReading): [number, number] => [r.at, r.level]);

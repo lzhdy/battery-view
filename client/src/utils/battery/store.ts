@@ -26,7 +26,9 @@ const NAMES_KEY = 'battery-view/names';
 const GEAR_KEY = 'battery-view/gear-profile/v1';
 export const MAX_READINGS_PER_DEVICE = 4000;
 
-/** 设备档位档案：粒度与每档耗时由严格检测学到一次后持久化，跨次启动作为先验 */
+/** 设备档位档案：粒度与每档耗时由严格检测学到一次后持久化，跨次启动作为先验。
+ *  key 为设备 VID:PID（硬件型号），不同种类/型号天然隔离；同型号多台设备共享
+ *  （粒度硬件固定）；插拔换口、用户改别名均不影响。 */
 export interface GearProfile {
   granularity: number;
   perGearMinutes: number;

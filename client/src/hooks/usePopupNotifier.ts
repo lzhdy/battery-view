@@ -35,17 +35,18 @@ interface Args {
  */
 const MAX_EST_MINUTES = 7 * 24 * 60;
 const estText = (
-  deviceId: string,
+  device: BatteryDevice,
   readings: BatteryReading[],
   charging: boolean,
 ): string => {
+  // readings 按 Windows path（r.deviceId）过滤；档位档案按 VID:PID（硬件型号）分桶
   const list = readings
-    .filter((r) => r.deviceId === deviceId)
+    .filter((r) => r.deviceId === device.id)
     .sort((a, b) => a.at - b.at);
   if (list.length < 3) return charging ? '充电中' : '放电中';
-  const knownGear = loadGearProfiles()[deviceId] ?? null;
+  const knownGear = loadGearProfiles()[device.productId] ?? null;
   const est = estimateTrend(list, charging, knownGear);
-  if (est.learnedGear) updateGearProfile(deviceId, est.learnedGear);
+  if (est.learnedGear) updateGearProfile(device.productId, est.learnedGear);
   if (charging && est.ttfMinutes != null) {
     if (est.ttfMinutes > MAX_EST_MINUTES) return '充电中 · 预计 7 天以上充满';
     return `充电中 · 预计约 ${Math.max(1, Math.round(est.ttfMinutes))} 分钟充满`;
@@ -82,7 +83,7 @@ export const usePopupNotifier = ({ devices, states, readings, enabled }: Args): 
             name: d.name,
             level: st?.battery ?? -1,
             charging: st?.charging === true,
-            sub: estText(d.id, readings, st?.charging === true),
+            sub: estText(d, readings, st?.charging === true),
           };
         });
         const anyLow = rows.some((r) => r.level >= 0 && r.level < 20);
@@ -117,7 +118,7 @@ export const usePopupNotifier = ({ devices, states, readings, enabled }: Args): 
                 name: d.name,
                 level,
                 charging: true,
-                sub: estText(d.id, readings, true),
+                sub: estText(d, readings, true),
               },
             ],
           });
