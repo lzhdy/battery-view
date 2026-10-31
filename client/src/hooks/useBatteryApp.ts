@@ -94,16 +94,18 @@ export const useBatteryApp = (): UseBatteryAppResult => {
         readingsRef.current = updated;
         setReadings(updated);
         saveReadings(updated);
+        setStates((prev: Record<string, DeviceLiveState>) => ({
+          ...prev,
+          [id]: {
+            battery: result.level,
+            charging: result.charging,
+            updatedAt: at,
+            error: '',
+          },
+        }));
       }
-      setStates((prev: Record<string, DeviceLiveState>) => ({
-        ...prev,
-        [id]: {
-          battery: result.level,
-          charging: result.charging,
-          updatedAt: at,
-          error: '',
-        },
-      }));
+      // level==null（协议间歇读取失败）：保留上次有效电量/充电状态，避免 UI 闪烁成"未知"；
+      // 设备真正拔出由 syncDevices 统一清除其状态。
     } catch (err) {
       const message: string =
         err instanceof Error ? err.message : '读取失败，请稍后重试';
@@ -238,10 +240,16 @@ export const useBatteryApp = (): UseBatteryAppResult => {
     return () => window.clearInterval(timer);
   }, [settings.autoRefresh, settings.intervalSec]);
 
-  // 设备热插拔重枚举（15s 周期，独立于电量刷新；设备消失即清除其状态）
+  // 设备热插拔重枚举 + 电量全量刷新（15s 周期，独立于 autoRefresh）：
+  // - 重枚举：设备插入/拔出即增删列表并清除残留状态；
+  // - 全量刷新：JM 等无线协议读取存在间歇失败（level=None），挂载后单次读取失败
+  //   会导致主界面长期"无电量显示"，此周期保证 UI 最多 15s 内拿到电量。
   useEffect(() => {
     const timer: number = window.setInterval(() => {
       syncDevicesRef.current();
+      devicesRef.current.forEach((d: BatteryDevice) => {
+        void refreshRef.current(d.id);
+      });
     }, 15000);
     return () => window.clearInterval(timer);
   }, []);
