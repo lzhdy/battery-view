@@ -8,7 +8,7 @@
 #[derive(Debug, Clone, Copy)]
 pub struct DeviceEntry {
     pub vid: u16,
-    /// None = 通配 VID（如北通 2E8C:*）
+    /// None = 通配 VID（仅匹配 VID，不限定 PID）
     pub pid: Option<u16>,
     pub kind: &'static str,
     pub name: &'static str,
@@ -36,11 +36,8 @@ fn table() -> &'static [DeviceEntry] {
             // 有线直连为鼠标本体 260D:1250；2.4G 为 8K 接收器 260D:1257（电量经 dongle 转发）
             DeviceEntry { vid: 0x260D, pid: Some(0x1250), kind: "mouse", name: "达尔优 AE7", connection: "有线", protocol: "匠盟(JM) 私有协议", provider_id: PROVIDER_JM },
             DeviceEntry { vid: 0x260D, pid: Some(0x1257), kind: "mouse", name: "达尔优 AE7", connection: "2.4G", protocol: "匠盟(JM) 私有协议", provider_id: PROVIDER_JM },
-            // 北通 黑武士 4 Pro（直连/2.4G 无线，VID 通配）
-            DeviceEntry { vid: 0x2E8C, pid: None, kind: "gamepad", name: "黑武士 4 Pro", connection: "无线", protocol: "无公开协议", provider_id: PROVIDER_HID },
-            // 北通 黑武士 4 Pro（XInput 形态）
-            DeviceEntry { vid: 0x045E, pid: Some(0x028E), kind: "gamepad", name: "黑武士 4 Pro (XInput)", connection: "XInput", protocol: "无公开协议", provider_id: PROVIDER_HID },
             // 注意：37D7:1002 实为 FlyDigi BS2PRO 散热器（非键盘，用户既定不入列表），已从注册表移除；
+            // 飞智黑武士 4 Pro 手柄电量经实测确认 2.4G/XInput 形态均无可用协议，已按用户决定移除（2E8C/045E 条目）；
             // 京东京造键盘（蓝牙）经实机核验为 Keychron K8（VID 05AC:PID 024F，传统蓝牙/HID-over-GATT），
             // 未暴露标准 BLE Battery Service（0x180F），无电量可读，按协议必然处理不入表。
         ]
