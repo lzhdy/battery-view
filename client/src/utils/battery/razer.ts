@@ -1,7 +1,7 @@
 /**
- * Razer HID 真机 Provider：通过 Tauri 桥接调用 Rust 命令读取真实设备电量。
- * 设备列表来自枚举（VID 1532 → 雷蛇外设），kind / 型号名由 Rust 按 PID 映射，
- * 前端直接使用，不再硬编码（多设备种类时图标/名称自动正确）。
+ * 桌面真机 Provider：通过 Tauri 桥接调用 Rust 命令读取真实设备电量。
+ * 设备列表来自枚举（雷蛇 VID 1532 → 90B 协议；其余品牌 → 通用识别层，
+ * kind / 型号名由 Rust 按 VID:PID 映射，前端直接使用，不再硬编码）。
  */
 
 import { getDesktopBridge } from './desktop';
@@ -19,6 +19,7 @@ interface RazerHidEntry {
   name?: string;
   connection: string;
   featureLen: number;
+  source?: string;
 }
 
 /** 缓存设备接口的 Feature Report 长度（读取时需按真实长度构造缓冲） */
@@ -36,16 +37,17 @@ const toDevice = (e: RazerHidEntry): BatteryDevice => {
     e.kind === 'tablet'
       ? e.kind
       : 'mouse';
-  const name: string = e.name && e.name !== 'Razer 设备' ? e.name : 'DeathAdder V2 Pro';
+  const name: string = e.name && e.name !== 'Razer 设备' ? e.name : '外设';
+  const isRazer = e.source !== 'generic';
   return {
     id: e.id,
     kind,
     name,
     model: name,
-    productId: `1532:${e.productId}`,
+    productId: e.productId,
     connection: e.connection,
-    protocol: 'Razer 90B Feature Report',
-    source: 'Razer HID',
+    protocol: isRazer ? 'Razer 90B Feature Report' : '设备识别（无公开电量协议）',
+    source: isRazer ? 'Razer HID' : '通用 HID',
   };
 };
 

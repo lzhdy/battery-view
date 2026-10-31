@@ -5,6 +5,7 @@ use tauri::menu::{MenuBuilder, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 
+mod generic;
 mod hid;
 mod tray;
 
@@ -303,38 +304,60 @@ fn remove_background(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
-/// 枚举雷蛇 HID 设备（真机：DeathAdder V2 Pro 2.4G 接收器 0x007D / 有线 0x007C）。
-/// 返回前端可直接消费的设备列表字段。
+/// 枚举全部受支持的外设：
+/// - 雷蛇 HID 设备（真机：DeathAdder V2 Pro 2.4G 接收器 0x007D / 有线 0x007C，走 90B Feature Report）
+/// - 通用外设（达尔优 AE7 鼠标 / SteelSeries 笔记本键盘 / 黑武士 4 Pro 手柄 / 京东京造蓝牙键盘，
+///   识别与名称映射，电量读取视设备公开协议而定）
+/// 返回前端可直接消费的设备列表字段（productId 统一为 "VID:PID"）。
 #[tauri::command]
 fn list_hid_devices() -> Result<Vec<serde_json::Value>, String> {
-    let devices = hid::list_razer_devices()?;
-    Ok(devices
-        .into_iter()
-        .map(|d| {
-            let pid = d.product_id;
-            serde_json::json!({
-                "id": d.path,
-                "productId": format!("{:04X}", pid),
-                "kind": kind_for_pid(pid),
-                "name": pid_name(pid),
-                "connection": d.connection,
-                "featureLen": d.feature_len,
-            })
-        })
-        .collect())
+    let mut out: Vec<serde_json::Value> = Vec::new();
+    for d in hid::list_razer_devices()? {
+        let pid = d.product_id;
+        out.push(serde_json::json!({
+            "id": d.path,
+            "productId": format!("1532:{:04X}", pid),
+            "kind": kind_for_pid(pid),
+            "name": pid_name(pid),
+            "connection": d.connection,
+            "featureLen": d.feature_len,
+            "source": "razer",
+        }));
+    }
+    for d in generic::list_generic_devices() {
+        out.push(serde_json::json!({
+            "id": d.path,
+            "productId": format!("{:04X}:{:04X}", d.vendor_id, d.product_id),
+            "kind": d.kind,
+            "name": d.name,
+            "connection": d.connection,
+            "featureLen": d.feature_len,
+            "source": "generic",
+        }));
+    }
+    Ok(out)
 }
 
-/// 读取指定 HID 路径的设备电量与充电状态。
+/// 读取指定设备的电量与充电状态（按设备路径分流：雷蛇走 90B 协议，通用设备按各自能力）。
 #[tauri::command]
 fn read_battery_level(path: String, feature_len: Option<u16>) -> Result<serde_json::Value, String> {
-    let (level, charging) = hid::read_battery(&path, feature_len.unwrap_or(91))?;
+    let (level, charging) = if path.contains("vid_1532") {
+        hid::read_battery(&path, feature_len.unwrap_or(91))?
+    } else {
+        generic::read_battery(&path, 0, 0)?
+    };
     Ok(serde_json::json!({ "level": level, "charging": charging }))
 }
 
 /// 读取设备固件的低电量阈值（百分比；DeathAdder V2 Pro 真机实测 5%）。
+/// 通用外设无公开低电量阈值协议，返回 null。
 #[tauri::command]
 fn read_low_battery_threshold(path: String, feature_len: Option<u16>) -> Result<Option<u8>, String> {
-    hid::read_low_battery(&path, feature_len.unwrap_or(91))
+    if path.contains("vid_1532") {
+        hid::read_low_battery(&path, feature_len.unwrap_or(91))
+    } else {
+        Ok(None)
+    }
 }
 
 /// 设备 PID → 设备类型（前端大图 / 托盘剪影 / 弹窗图标共用）

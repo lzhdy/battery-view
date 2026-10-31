@@ -21,14 +21,26 @@
 
 ## Supported Devices
 
-当前基于 **Razer Synapse 3.5 的 90B feature report** 协议读取电量，实测设备：
+设备识别采用 **双通道架构**：雷蛇外设走专用 90B Feature Report 协议读电量；其余品牌外设通过通用 HID 层按 VID:PID 白名单识别并展示（电量读取依赖设备是否暴露标准 HID 电池页，否则显示 `--`）。
+
+### Razer（90B Feature Report，实测可用）
 
 | 设备 | PID | 协议 | 状态 |
 | --- | --- | --- | --- |
 | Razer DeathAdder V2 Pro（有线 / 2.4G） | `0x007C` / `0x007D` | Razer 90B 电池 feature | ✅ 实测可用 |
 | 其他 Razer 2.4G 外设（键盘/耳机/鼠标垫） | 同族 | Razer 90B 电池 feature | ⚠️ 理论支持（需真机验证） |
 
-> 标准 HID 电池设备（Windows 系统自带 Battery 报告，如部分第三方外设）也在设备列表逻辑中预留，可通过 `hid.rs` 的 PID→kind 映射表扩展。
+### 通用外设（VID:PID 白名单识别，`src-tauri/src/generic.rs`）
+
+| 设备 | VID:PID | 类型 | 连接 | 电量 |
+| --- | --- | --- | --- | --- |
+| 达尔优 AE7 | `260D:1257` | 鼠标 | 2.4G | ⚠️ 无标准 HID 电池页 → `--` |
+| 北通 黑武士 4 Pro（XInput） | `045E:028E` | 手柄 | XInput | ⚠️ 无公开协议 → `--` |
+| 北通 黑武士 4 Pro（直连/2.4G） | `2E8C:*` | 手柄 | 无线 | ⚠️ 预留分支（需真机验证） |
+| 京东京造键盘 | `37D7:1002` | 键盘 | 蓝牙 | ⚠️ 无标准 HID 电池页 → `--` |
+| SteelSeries 笔记本自带键盘 | `1038:2052` | 键盘 | 有线 | — 无电池 |
+
+> 已探测确认：以上通用设备在 Windows 下均未暴露标准 HID 电池页（Usage Page `0x0084`），且 2.4G 鼠标 / XInput 手柄 / 有线键盘不提供公开电量协议，电量显示 `--` 属预期行为；后续若厂商提供协议，在 `generic.rs` 的 `read_battery` 中按 VID:PID 增加读取分支即可。
 
 ## Architecture（为什么加新设备很容易）
 
@@ -44,18 +56,19 @@
                        │ Tauri invoke
 ┌──────────────────────▼───────────────────────────────┐
 │  Rust (src-tauri/src)                                 │
-│  list_battery_devices / read_battery 命令              │
-│  hid.rs: HID 枚举 + Razer 90B 协议 + PID→kind 分流     │
+│  list_hid_devices / read_battery_level 命令            │
+│  hid.rs:     HID 枚举 + Razer 90B 协议 + PID→kind      │
+│  generic.rs: 通用 HID 枚举 + VID:PID 白名单识别 + 读取占位 │
 │  tray.rs: 托盘图标渲染（Lucide PNG 嵌入 + 电量条）       │
-│  lib.rs: 单实例/开机自启/设置持久化/弹窗调度             │
+│  lib.rs: 单实例/开机自启/设置持久化/弹窗调度 + 设备列表合并 │
 └──────────────────────────────────────────────────────┘
 ```
 
 ### 添加一台新设备（三步）
 
-1. **协议层**（`src-tauri/src/hid.rs`）：若新设备走标准 HID 电池报告（`Usage Page 0x0085`），直接复用现有枚举逻辑；若走私有协议，仿照 `read_razer_battery` 加一个按 VID/PID 分发的读取函数。
-2. **映射表**（`src-tauri/src/hid.rs` 的 PID→kind 表）：新增一行 `(vendor, product) => DeviceKind`，并在 `client/src/utils/battery/types.ts` 的 `DeviceKind` 联合类型与 `assets/peripherals/*.png` 插画中加入对应设备图。
-3. **托盘图标**：把设备线条图标 PNG（Lucide 风格，128×128）放入 `src-tauri/src/assets/lucide/`，`tray.rs` 的 `draw_lucide_icon` 自动按 `kind` 找到并渲染。
+1. **识别白名单**（`src-tauri/src/generic.rs`）：在 `identify()` 的 `(vid, pid) => (kind, name, connection)` 匹配表加一行，如 `(VID_DAREU, 0x1257) => ("mouse", "达尔优 AE7", "2.4G")`；设备即自动出现在主窗口列表（枚举按 VID:PID 去重，全 HID 接口扫描）。
+2. **电量协议**（`src-tauri/src/generic.rs` 的 `read_battery`）：设备若暴露标准 HID 电池页（Usage Page `0x0084`），在 `has_battery_page()` 命中后按输入 Report 读取；若走厂商私有协议，仿照 `hid.rs` 的 `read_razer_battery` 按 VID:PID 增加分支。无协议时保持返回 `Ok((None, false))`，前端显示 `--`，不阻塞设备识别。
+3. **托盘图标**：若新设备需要托盘专属图标，把设备线条图标 PNG（Lucide 风格，128×128）放入 `src-tauri/src/assets/lucide/`，`tray.rs` 按 `kind` 自动找到并渲染（`mouse` / `keyboard` / `gamepad` 等剪影已内置）。
 
 前端所有 UI、趋势预测、弹窗逻辑与设备无关——它们只消费 `BatteryProvider` 返回的 `BatteryDevice[]` / `BatteryReadResult`。
 
@@ -107,8 +120,9 @@ battery-view/
 │   └── src/components/ui/ # 毛玻璃 UI 组件（Radix + Tailwind）
 ├── src-tauri/            # Tauri 壳（Rust）
 │   ├── src/hid.rs        # HID 枚举 + Razer 90B 协议 + PID→kind
+│   ├── src/generic.rs    # 通用 HID 枚举 + VID:PID 白名单识别 + 电量读取占位
 │   ├── src/tray.rs       # 托盘图标渲染（Lucide PNG + 电量条）
-│   ├── src/lib.rs        # 命令注册 / 单实例 / 设置 / 弹窗调度
+│   ├── src/lib.rs        # 命令注册 / 单实例 / 设置 / 弹窗调度 / 设备列表合并
 │   └── scripts/          # 前端构建脚本（build-desktop.mjs）
 ├── assets/lucide/        # 托盘图标素材（lucide.dev, ISC 协议）
 └── docs/                 # 迁移指南与截图
