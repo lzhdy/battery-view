@@ -194,10 +194,12 @@ fn utf16(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(Some(0)).collect()
 }
 
-/// 枚举本机全部 HID 接口（不按 VID/PID 过滤）：(path, vid, pid, feature_len)。
+/// 枚举本机全部 HID 接口（不按 VID/PID 过滤）：
+/// (path, vid, pid, feature_len, usage_page, usage, input_len)。
 /// 平台统一枚举源（设计 v0.2 P0-1）：DeviceManager 与 generic 白名单列表共用，
 /// 覆盖雷蛇 / 通用 / BLE HID-over-GATT 三类接口。
-pub fn enumerate_all_hid() -> Vec<(String, u16, u16, u16)> {
+/// usage_page/usage/input_len 供 DeviceManager 识别私有协议命令集合（如匠盟 FF02:02）。
+pub fn enumerate_all_hid() -> Vec<(String, u16, u16, u16, u16, u16, u16)> {
     let mut guid: GUID = unsafe { std::mem::zeroed() };
     unsafe { HidD_GetHidGuid(&mut guid) };
     let dev_info = unsafe {
@@ -206,7 +208,7 @@ pub fn enumerate_all_hid() -> Vec<(String, u16, u16, u16)> {
     if dev_info == INVALID_HANDLE_VALUE {
         return Vec::new();
     }
-    let mut out: Vec<(String, u16, u16, u16)> = Vec::new();
+    let mut out: Vec<(String, u16, u16, u16, u16, u16, u16)> = Vec::new();
     let mut index: u32 = 0;
     loop {
         let mut if_data: SP_DEVICE_INTERFACE_DATA = unsafe { std::mem::zeroed() };
@@ -270,6 +272,9 @@ pub fn enumerate_all_hid() -> Vec<(String, u16, u16, u16)> {
         attrs.size = std::mem::size_of::<HIDD_ATTRIBUTES>() as u32;
         let attrs_ok = unsafe { HidD_GetAttributes(handle as *mut std::ffi::c_void, &mut attrs) } != 0;
         let mut feature_len: u16 = 0;
+        let mut usage_page: u16 = 0;
+        let mut usage: u16 = 0;
+        let mut input_len: u16 = 0;
         if attrs_ok {
             let mut prep: *mut std::ffi::c_void = std::ptr::null_mut();
             let prep_ok = unsafe { HidD_GetPreparsedData(handle as *mut std::ffi::c_void, &mut prep) } != 0 && !prep.is_null();
@@ -278,6 +283,9 @@ pub fn enumerate_all_hid() -> Vec<(String, u16, u16, u16)> {
                 let caps_ret = unsafe { HidP_GetCaps(prep, &mut caps) };
                 if caps_ret == 0x00110000 || caps_ret == 0 {
                     feature_len = caps.feature_report_byte_length;
+                    usage_page = caps.usage_page;
+                    usage = caps.usage;
+                    input_len = caps.input_report_byte_length;
                 }
                 unsafe { HidD_FreePreparsedData(prep) };
             }
@@ -287,7 +295,7 @@ pub fn enumerate_all_hid() -> Vec<(String, u16, u16, u16)> {
         if !attrs_ok {
             continue;
         }
-        out.push((path, attrs.vendor_id, attrs.product_id, feature_len));
+        out.push((path, attrs.vendor_id, attrs.product_id, feature_len, usage_page, usage, input_len));
     }
     unsafe { SetupDiDestroyDeviceInfoList(dev_info) };
     out

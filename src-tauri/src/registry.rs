@@ -20,6 +20,7 @@ pub struct DeviceEntry {
 pub const PROVIDER_RAZER: &str = "razer";
 pub const PROVIDER_HID: &str = "hid";
 pub const PROVIDER_BLE: &str = "ble";
+pub const PROVIDER_JM: &str = "jm";
 
 /// 现有设备重新录入清单（与 README 设备表一致，SteelSeries 天然不在表中）。
 /// 用 OnceLock 静态化，lookup_entry 可返回 &'static 引用。
@@ -30,8 +31,9 @@ fn table() -> &'static [DeviceEntry] {
             // 雷蛇（90B 私有协议）
             DeviceEntry { vid: 0x1532, pid: Some(0x007C), kind: "mouse", name: "DeathAdder V2 Pro", connection: "有线", protocol: "Razer 90B Feature Report", provider_id: PROVIDER_RAZER },
             DeviceEntry { vid: 0x1532, pid: Some(0x007D), kind: "mouse", name: "DeathAdder V2 Pro", connection: "2.4G", protocol: "Razer 90B Feature Report", provider_id: PROVIDER_RAZER },
-            // 达尔优 AE7（2.4G 私有无线，无公开协议）
-            DeviceEntry { vid: 0x260D, pid: Some(0x1257), kind: "mouse", name: "达尔优 AE7", connection: "2.4G", protocol: "无公开协议", provider_id: PROVIDER_HID },
+            // 达尔优 AE7（260D:1257 为 8K 接收器；匠盟 JM 私有协议，
+            // 经网页驱动 jmdevice.js 逆向 + 真机实测：0x08 report / cmd 0x04 → 帧体[5]=电量%）
+            DeviceEntry { vid: 0x260D, pid: Some(0x1257), kind: "mouse", name: "达尔优 AE7", connection: "2.4G", protocol: "匠盟(JM) 私有协议", provider_id: PROVIDER_JM },
             // 北通 黑武士 4 Pro（直连/2.4G 无线，VID 通配）
             DeviceEntry { vid: 0x2E8C, pid: None, kind: "gamepad", name: "黑武士 4 Pro", connection: "无线", protocol: "无公开协议", provider_id: PROVIDER_HID },
             // 北通 黑武士 4 Pro（XInput 形态）

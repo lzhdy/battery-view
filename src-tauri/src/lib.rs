@@ -8,6 +8,7 @@ use tauri::Manager;
 mod ble;
 mod generic;
 mod hid;
+mod jm;
 mod manager;
 mod provider;
 mod registry;

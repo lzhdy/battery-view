@@ -46,6 +46,21 @@ impl DeviceProvider for HidProvider {
     }
 }
 
+/// 匠盟(JM) 私有协议 Provider（达尔优 AE7 8K 接收器 260D:1257，jm.rs）
+struct JmProvider;
+
+impl DeviceProvider for JmProvider {
+    fn id(&self) -> &'static str {
+        registry::PROVIDER_JM
+    }
+    fn name(&self) -> &'static str {
+        "匠盟 JM"
+    }
+    fn read_battery(&self, dev: &ProviderDevice) -> Result<(Option<u8>, bool), String> {
+        crate::jm::read_battery(&dev.path)
+    }
+}
+
 /// BLE GATT Provider（京东京造键盘 37D7:1002，Windows GATT 0x180F/0x2A19）
 struct BleProvider;
 
@@ -76,6 +91,7 @@ impl DeviceManager {
         let providers: Vec<Box<dyn DeviceProvider>> = vec![
             Box::new(RazerProvider),
             Box::new(HidProvider),
+            Box::new(JmProvider),
             Box::new(BleProvider),
         ];
         DeviceManager { providers }
@@ -90,7 +106,7 @@ impl DeviceManager {
     pub fn discover(&self) -> Vec<ProviderDevice> {
         // (vid, pid) → 已选设备（电量能力 rank 最小者胜出；同 rank 保留先枚举者）
         let mut best: Vec<(ProviderDevice, u8)> = Vec::new();
-        for (path, vid, pid, feature_len) in crate::generic::enumerate_all_hid() {
+        for (path, vid, pid, feature_len, usage_page, usage, _input_len) in crate::generic::enumerate_all_hid() {
             let Some(entry) = registry::lookup_entry(vid, pid) else {
                 continue; // 白名单外不识别
             };
@@ -105,7 +121,7 @@ impl DeviceManager {
                 feature_len,
                 provider_id: entry.provider_id,
             };
-            let rank = capability_rank(&dev);
+            let rank = capability_rank(&dev, usage_page, usage);
             let slot = best.iter_mut().find(|(d, _)| d.vid == vid && d.pid == pid);
             match slot {
                 Some((_, cur)) if rank < *cur => {
@@ -169,8 +185,17 @@ impl DeviceManager {
     }
 }
 
-/// 电量能力优先级：BLE GATT 有公开协议 > 标准 HID 电池页 > 无协议接口
-fn capability_rank(dev: &ProviderDevice) -> u8 {
+/// 电量能力优先级：BLE GATT 有公开协议 > 标准 HID 电池页 > 无协议接口。
+/// 私有协议命令接口特判：匠盟 JM 设备仅 usagePage 0xFF02/usage 0x02 的集合可发命令，
+/// 该接口 rank=0（优先选中），其余集合 rank=2（避免选中无法读电量的接口）。
+fn capability_rank(dev: &ProviderDevice, usage_page: u16, usage: u16) -> u8 {
+    if dev.provider_id == registry::PROVIDER_JM {
+        return if usage_page == crate::jm::JM_USAGE_PAGE && usage == crate::jm::JM_USAGE {
+            0
+        } else {
+            2
+        };
+    }
     if dev.provider_id == registry::PROVIDER_BLE {
         0
     } else if dev.protocol.contains("HID 电池") || dev.protocol.contains("0x84") {
