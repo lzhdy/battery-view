@@ -17,6 +17,8 @@ mod tray;
 // ── 运行时设置（开机自启 / 充电弹窗开关）：static 供轮询线程实时读取，磁盘 JSON 持久化 ──
 static AUTO_START_EN: AtomicBool = AtomicBool::new(true);
 static POPUP_CHARGING_EN: AtomicBool = AtomicBool::new(true);
+// 本进程是否由开机自启拉起（命令行含 --autostart）：自启场景只建托盘、不显示主窗口
+static AUTOSTART_MODE: AtomicBool = AtomicBool::new(false);
 
 /// 设置文件路径：%APPDATA%\battery-view\settings.json
 fn prefs_path() -> std::path::PathBuf {
@@ -72,7 +74,8 @@ fn set_autostart_registry(enabled: bool) -> Result<(), String> {
     unsafe {
         if enabled {
             let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-            let cmd = format!("\"{}\"", exe.display());
+            // --autostart：标记由 Windows 开机自启拉起，程序据此只建托盘、不显示主窗口
+            let cmd = format!("\"{}\" --autostart", exe.display());
             let value: Vec<u16> = cmd.encode_utf16().chain(std::iter::once(0)).collect();
             let rc = RegSetKeyValueW(
                 HKEY_CURRENT_USER,
@@ -421,9 +424,14 @@ fn show_main_window(app: &tauri::AppHandle) {
     }
 }
 
-/// 前端渲染完成后调用：显示主窗口（消除启动时的黑框闪烁）
+/// 前端渲染完成后调用：显示主窗口（消除启动时的黑框闪烁）。
+/// 开机自启场景（--autostart）下忽略：自启只出托盘图标，主窗口保持隐藏，
+/// 用户从托盘"显示主界面"主动唤出（show_main_window 不受限）。
 #[tauri::command]
 fn show_main_after_ready(app: tauri::AppHandle) {
+    if AUTOSTART_MODE.load(Ordering::Relaxed) {
+        return;
+    }
     show_main_window(&app);
 }
 
@@ -487,21 +495,27 @@ fn asset_mime(path: &str) -> &'static str {
 
 /// 前端资源根目录（优先打包安装目录，回退开发目录）。
 fn dist_base() -> std::path::PathBuf {
-    // 1) 打包安装后：exe 同目录 resources/dist/client（NSIS/MSI 的 bundle.resources 布局）
+    // 1) 打包安装后：Tauri 2 在 Windows 上把 bundle.resources 安装为
+    //    exe 同目录 `_up_\dist\client`（NSIS 实际布局；旧版假设 resources/ 前缀，实际不存在）
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
+            let p = dir.join("_up_").join("dist").join("client");
+            if p.join("index.html").exists() {
+                return p;
+            }
+            // 2) 兼容布局：exe 同目录 resources/dist/client
             let p = dir.join("resources").join("dist").join("client");
             if p.join("index.html").exists() {
                 return p;
             }
-            // 2) 开发运行（cargo run / release exe 直接跑，dist 未进 resources）
+            // 3) 开发运行（cargo run / release exe 直接跑，dist 未进 resources）
             let p2 = dir.join("dist").join("client");
             if p2.join("index.html").exists() {
                 return p2;
             }
         }
     }
-    // 3) 编译期工程目录：src-tauri/../dist/client
+    // 4) 编译期工程目录：src-tauri/../dist/client
     let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("dist")
@@ -523,6 +537,13 @@ pub fn run() {
     }
     // 加载持久化设置（开机自启 / 充电弹窗开关），供轮询线程与命令读取
     load_prefs();
+    // 检测自启拉起：注册表 Run 键值为 "<exe> --autostart"，开机自启仅建托盘、不显示主窗口
+    for arg in std::env::args().skip(1) {
+        if arg.eq_ignore_ascii_case("--autostart") {
+            AUTOSTART_MODE.store(true, Ordering::Relaxed);
+            break;
+        }
+    }
     // 初始化平台核心 DeviceManager（统一枚举 + Provider 分发；幂等）
     manager::init();
     // 开机自启默认开启：确保注册表 Run 键存在（幂等；用户关闭后不再写入）
@@ -588,7 +609,8 @@ pub fn run() {
             }
             // 兜底：窗口初始隐藏（见 tauri.conf visible:false），4 秒后无论前端是否就绪都强制显示，
             // 避免渲染失败导致窗口永久隐藏；正常路径由前端 invoke show_main_after_ready 提前显示。
-            {
+            // 开机自启场景（--autostart）跳过本兜底：自启只出托盘图标，不弹主窗口。
+            if !AUTOSTART_MODE.load(Ordering::Relaxed) {
                 let app2 = app.clone();
                 std::thread::spawn(move || {
                     std::thread::sleep(Duration::from_secs(4));
