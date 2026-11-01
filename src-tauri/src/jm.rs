@@ -45,6 +45,7 @@ extern "system" {
         overlapped: *mut std::ffi::c_void,
     ) -> i32;
     fn WaitForSingleObject(handle: isize, timeout_ms: u32) -> u32;
+    fn CancelIo(handle: isize) -> i32;
     fn GetOverlappedResult(
         h: isize,
         overlapped: *mut std::ffi::c_void,
@@ -73,6 +74,24 @@ const OPEN_EXISTING: u32 = 3;
 const FILE_FLAG_OVERLAPPED: u32 = 0x4000_0000;
 const ERROR_IO_PENDING: u32 = 997;
 const WAIT_OBJECT_0: u32 = 0;
+
+/// 取消句柄上挂起的重叠 IO，并等待内核真正完成取消。
+/// 若不取消：超时返回后内核仍持有对已出栈 OVERLAPPED/缓冲区的引用，随时写入，
+/// 与复用同一块栈内存的新 IO 形成竞争 → 内存破坏 → 0xc0000005 崩溃
+/// （设备不应答造成 level=None 高频超时即触发条件）。
+fn cancel_pending(handle: isize, ov: &mut OVERLAPPED) {
+    unsafe {
+        CancelIo(handle);
+        let mut done: u32 = 0;
+        // bWait=TRUE：阻塞至该 overlapped 完成或被取消，确认内核不再引用 ov/buf
+        let _ = GetOverlappedResult(
+            handle,
+            ov as *mut OVERLAPPED as *mut std::ffi::c_void,
+            &mut done,
+            1,
+        );
+    }
+}
 
 /// 命令集合标识（与网页驱动 ParseDevices 判定一致）
 pub const JM_USAGE_PAGE: u16 = 0xFF02;
@@ -136,7 +155,9 @@ fn read_report(handle: isize) -> Option<[u8; JM_REPORT_LEN]> {
     }
     let err = unsafe { GetLastError() };
     if err == ERROR_IO_PENDING {
-        // 等待完成；超时返回（设备无响应时不挂死调用线程）
+        // 等待完成；超时返回（设备无响应时不挂死调用线程）。
+        // 注意：超时后必须先取消挂起的重叠 IO（cancel_pending），
+        // 否则内核仍会向已出栈的 buf/ov 写入 → 内存破坏 → 0xc0000005 崩溃。
         let wait = unsafe { WaitForSingleObject(handle, 600) };
         if wait == WAIT_OBJECT_0 {
             let mut done: u32 = 0;
@@ -151,6 +172,8 @@ fn read_report(handle: isize) -> Option<[u8; JM_REPORT_LEN]> {
             if rok != 0 && done as usize >= JM_REPORT_LEN {
                 return Some(buf);
             }
+        } else {
+            cancel_pending(handle, &mut ov);
         }
     }
     None
@@ -188,6 +211,9 @@ fn write_report(handle: isize, pkt: &[u8; JM_REPORT_LEN]) -> Result<u32, u32> {
             if rok != 0 {
                 return Ok(done);
             }
+        } else {
+            // 超时：取消挂起的写入，防止内核向已出栈的 ov 写入导致内存破坏
+            cancel_pending(handle, &mut ov);
         }
         return Err(err);
     }
