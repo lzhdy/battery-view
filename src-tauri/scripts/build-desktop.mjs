@@ -7,10 +7,11 @@ const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(scriptDir, '../..');
 const distDir = path.join(root, 'dist/client');
 
-// DLP 内联默认开启：公司 DLP 对 .js 透明加密（.jsd 变体也加密），非白名单进程读任何
-// .js 都得到密文 → WebView SyntaxError → 白屏。默认把全部 JS 合并并内联进 index.html
-// （HTML 明文通道），前端零 .js 文件读取；显式 DLP_INLINE=0 可关闭恢复多文件构建。
-const dlpInline = process.env.DLP_INLINE !== '0';
+// DLP 全内联（本机特有方案，默认关闭）：仅当构建/运行环境装有 DLP（如绿盾，对 .js/.jsd
+// 透明加密，非白名单进程读到密文 → WebView SyntaxError → 白屏）时，显式 DLP_INLINE=1
+// 把全部 JS 合并为单 chunk 并内联进 index.html（HTML 明文通道），前端零 .js 文件读取。
+// 未设置时保持常规多文件构建（manualChunks 代码分割）。
+const dlpInline = process.env.DLP_INLINE === '1';
 
 fs.rmSync(distDir, { recursive: true, force: true });
 
@@ -112,7 +113,7 @@ if (fs.existsSync(indexHtmlPath)) {
 // DLP 全内联：公司 DLP 对 .js 扩展名透明加密，非白名单进程（battery-view.exe 及其
 // WebView）读任何 .js/.jsd 都得到密文 → SyntaxError → 白屏。此模式由 vite.config.ts
 // 合并为单一入口 chunk，再把该 chunk 整体内联进 index.html：HTML 是明文通道，前端
-// 零 .js 文件读取，从根上绕过 DLP 加密。默认开启（DLP_INLINE=0 关闭）。
+// 零 .js 文件读取，从根上绕过 DLP 加密。默认关闭，仅 DLP_INLINE=1 时启用（本机特有）。
 if (dlpInline) {
   let html = fs.readFileSync(indexHtmlPath, 'utf-8');
   // 移除 modulepreload 外链（内联后冗余，且其 .js 引用在 DLP 环境读取会出错）
